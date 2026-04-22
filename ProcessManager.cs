@@ -46,8 +46,8 @@ public class ProcessManager
                 break;
             }
 
-            var started = await StartProcessAsync(startupItem.Id);
-            if (started)
+            var startResult = await StartProcessAsync(startupItem.Id);
+            if (startResult)
             {
                 await WaitUntilReadyAsync(startupItem.Name, startupItem.StartupDelayMs, stoppingToken);
             }
@@ -94,7 +94,17 @@ public class ProcessManager
                     else
                     {
                         _logger.LogWarning("检测到 {ProcessName} 已停止，准备自动重启。", item.Name);
-                        StartProcessCore(item);
+                        var started = StartProcessCore(item);
+                        if (!started)
+                        {
+                            item.CrashHistory.Add(DateTime.UtcNow);
+                            if (item.CrashHistory.Count >= 5)
+                            {
+                                item.IsCircuitBroken = true;
+                                _logger.LogError("[熔断] {ProcessName} 启动后反复秒退，已停止自动重启。", item.Name);
+                                _ = SendEmergencyAlertAsync(item.Name, "启动后反复秒退");
+                            }
+                        }
                     }
                 }
 
@@ -246,7 +256,7 @@ public class ProcessManager
 
     public async Task<bool> StartProcessAsync(string id)
     {
-        var started = false;
+        bool started;
 
         await _stateLock.WaitAsync();
         try
@@ -257,19 +267,15 @@ public class ProcessManager
                 return false;
             }
 
-            StartProcessCore(item);
-            started = true;
+            item.CrashHistory.Clear();
+            started = StartProcessCore(item);
         }
         finally
         {
             _stateLock.Release();
         }
 
-        if (started)
-        {
-            await BroadcastStatusAsync();
-        }
-
+        await BroadcastStatusAsync();
         return started;
     }
 
@@ -379,7 +385,11 @@ public class ProcessManager
         }
     }
 
-    private void StartProcessCore(ProcessItem item)
+    /// <summary>
+    /// 启动进程并进行启动后验证。返回 true 表示进程启动成功且仍在运行，
+    /// 返回 false 表示进程秒退（启动失败）。
+    /// </summary>
+    private bool StartProcessCore(ProcessItem item)
     {
         try
         {
@@ -387,7 +397,6 @@ public class ProcessManager
 
             item.IsManuallyStopped = false;
             item.IsCircuitBroken = false;
-            item.CrashHistory.Clear();
             item.CpuUsage = 0;
             item.MemoryMb = 0;
             item.LastMonitorTime = default;
@@ -428,11 +437,27 @@ public class ProcessManager
 
             item.CurrentProcess = process;
             _logger.LogInformation("已启动 {ProcessName}，PID: {Pid}", item.Name, process.Id);
+
+            // 短暂等待后检测秒退：DLL 不存在、路径错误等导致进程瞬间退出的情况
+            if (process.WaitForExit(500))
+            {
+                var exitCode = process.ExitCode;
+                _logger.LogError(
+                    "{ProcessName} 启动后立即退出，ExitCode={ExitCode}，请检查 DLL 路径和启动参数。",
+                    item.Name, exitCode);
+
+                process.Dispose();
+                item.CurrentProcess = null;
+                return false;
+            }
+
+            return true;
         }
         catch (Exception ex)
         {
             item.CurrentProcess = null;
             _logger.LogError(ex, "启动 {ProcessName} 失败。", item.Name);
+            return false;
         }
     }
 
