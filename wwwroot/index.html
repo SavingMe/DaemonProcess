@@ -159,7 +159,7 @@
         }
 
         .col-actions {
-            width: 330px;
+            width: 420px;
         }
 
         th,
@@ -267,10 +267,61 @@
 
         .button-row {
             display: grid;
-            grid-template-columns: repeat(4, minmax(72px, 1fr));
+            grid-template-columns: repeat(5, minmax(64px, 1fr));
             gap: 6px;
             align-items: stretch;
             min-width: 0;
+        }
+
+        .monitor-table tbody tr.drag-over td {
+            background: rgba(37, 99, 235, 0.08);
+            box-shadow: inset 0 1px 0 rgba(37, 99, 235, 0.16), inset 0 -1px 0 rgba(37, 99, 235, 0.16);
+        }
+
+        .update-file-name {
+            margin: 0 0 14px;
+            color: var(--muted);
+            font-family: "Cascadia Mono", "Consolas", monospace;
+            font-size: 13px;
+            word-break: break-all;
+        }
+
+        .history-list {
+            display: grid;
+            gap: 12px;
+            max-height: calc(100vh - 190px);
+            overflow-y: auto;
+        }
+
+        .history-item {
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            padding: 14px;
+            background: rgba(248, 250, 252, 0.82);
+        }
+
+        .history-item strong {
+            display: block;
+            margin-bottom: 6px;
+        }
+
+        .history-item dl {
+            display: grid;
+            grid-template-columns: 96px minmax(0, 1fr);
+            gap: 6px 10px;
+            margin: 0;
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .history-item dt {
+            font-weight: 700;
+        }
+
+        .history-item dd {
+            margin: 0;
+            min-width: 0;
+            overflow-wrap: anywhere;
         }
 
         button {
@@ -622,8 +673,6 @@
     <div class="page-shell">
         <section class="hero">
             <div>
-                <h1>ProcessDaemon 控制台</h1>
-                <p>统一查看 PID、资源占用和运行状态，并把新增、编辑、删除都收进同一张监控列表里。列表采用固定列宽和稳定行更新，尽量避免按钮位置跳动造成误操作。</p>
             </div>
             <div class="signal-pill" id="connectionState">
                 <span></span>
@@ -635,7 +684,6 @@
             <div class="card-header">
                 <div>
                     <h2>进程监控</h2>
-                    <p>同一张表里同时呈现运行状态、配置摘要和四个常用操作。</p>
                 </div>
                 <div class="header-actions">
                     <button type="button" class="btn-primary" id="openConfigButton">新增进程</button>
@@ -715,6 +763,42 @@
         </div>
     </section>
 
+    <section class="modal-card config-modal" id="updateModal">
+        <div class="modal-header">
+            <div>
+                <h3 id="updateTitle">上传更新包</h3>
+                <p id="updateSubtitle">更新前会自动备份目标目录，成功后会重启进程。</p>
+            </div>
+            <button class="modal-close" type="button" id="closeUpdateButton">关闭</button>
+        </div>
+        <div class="config-modal-body">
+            <p class="update-file-name" id="updateFileName"></p>
+            <form id="updateForm">
+                <div class="field">
+                    <label for="updatePassword">压缩包密码</label>
+                    <input id="updatePassword" name="password" type="password" placeholder="无密码可留空">
+                </div>
+                <div class="form-actions">
+                    <button class="btn-primary" type="submit" id="uploadUpdateButton">开始更新</button>
+                    <button class="btn-secondary" type="button" id="cancelUpdateButton">取消</button>
+                </div>
+            </form>
+        </div>
+    </section>
+
+    <section class="modal-card config-modal" id="historyModal">
+        <div class="modal-header">
+            <div>
+                <h3 id="historyTitle">更新历史</h3>
+                <p id="historySubtitle">展示该进程每次更新和备份记录。</p>
+            </div>
+            <button class="modal-close" type="button" id="closeHistoryButton">关闭</button>
+        </div>
+        <div class="config-modal-body">
+            <div class="history-list" id="historyList"></div>
+        </div>
+    </section>
+
     <section class="modal-card terminal-modal" id="terminalModal">
         <div class="terminal-topbar">
             <div class="terminal-dots" aria-hidden="true">
@@ -744,6 +828,7 @@
             rowRefs: new Map(),
             editingId: null,
             currentLogId: null,
+            pendingUpdate: null,
             activeModal: null
         };
 
@@ -770,7 +855,21 @@
             terminalMeta: document.getElementById("terminalMeta"),
             terminalLabel: document.getElementById("terminalLabel"),
             logConsole: document.getElementById("logConsole"),
-            closeTerminalButton: document.getElementById("closeTerminalButton")
+            closeTerminalButton: document.getElementById("closeTerminalButton"),
+            updateModal: document.getElementById("updateModal"),
+            updateForm: document.getElementById("updateForm"),
+            updateTitle: document.getElementById("updateTitle"),
+            updateSubtitle: document.getElementById("updateSubtitle"),
+            updateFileName: document.getElementById("updateFileName"),
+            updatePassword: document.getElementById("updatePassword"),
+            uploadUpdateButton: document.getElementById("uploadUpdateButton"),
+            closeUpdateButton: document.getElementById("closeUpdateButton"),
+            cancelUpdateButton: document.getElementById("cancelUpdateButton"),
+            historyModal: document.getElementById("historyModal"),
+            historyTitle: document.getElementById("historyTitle"),
+            historySubtitle: document.getElementById("historySubtitle"),
+            historyList: document.getElementById("historyList"),
+            closeHistoryButton: document.getElementById("closeHistoryButton")
         };
 
         const connection = new signalR.HubConnectionBuilder()
@@ -813,6 +912,10 @@
         elements.openConfigButton.addEventListener("click", () => openConfigModal());
         elements.closeConfigButton.addEventListener("click", closeConfigModal);
         elements.closeTerminalButton.addEventListener("click", () => closeActiveModal());
+        elements.updateForm.addEventListener("submit", uploadUpdatePackage);
+        elements.closeUpdateButton.addEventListener("click", closeUpdateModal);
+        elements.cancelUpdateButton.addEventListener("click", closeUpdateModal);
+        elements.closeHistoryButton.addEventListener("click", closeHistoryModal);
         elements.overlay.addEventListener("click", () => closeActiveModal());
         document.addEventListener("keydown", event => {
             if (event.key === "Escape") {
@@ -869,6 +972,7 @@
             for (const config of state.configs) {
                 const row = document.createElement("tr");
                 row.id = `row-${config.id}`;
+                wireUpdateDrop(row, config);
 
                 const nameCell = document.createElement("td");
                 const nameWrap = document.createElement("div");
@@ -910,6 +1014,9 @@
 
                 const toggleButton = createActionButton("启动", "btn-success");
 
+                const historyButton = createActionButton("历史", "btn-secondary");
+                historyButton.addEventListener("click", () => openHistoryModal(config));
+
                 const editButton = createActionButton("编辑", "btn-ghost");
                 editButton.addEventListener("click", () => openConfigModal(config));
 
@@ -918,6 +1025,7 @@
 
                 buttons.appendChild(terminalButton);
                 buttons.appendChild(toggleButton);
+                buttons.appendChild(historyButton);
                 buttons.appendChild(editButton);
                 buttons.appendChild(deleteButton);
                 actionCell.appendChild(buttons);
@@ -998,6 +1106,228 @@
             button.className = `action-button ${className}`;
             button.textContent = label;
             return button;
+        }
+
+        function wireUpdateDrop(row, config) {
+            row.addEventListener("dragover", event => {
+                if (!event.dataTransfer || event.dataTransfer.types.includes("Files") === false) {
+                    return;
+                }
+
+                event.preventDefault();
+                row.classList.add("drag-over");
+            });
+
+            row.addEventListener("dragleave", event => {
+                if (!row.contains(event.relatedTarget)) {
+                    row.classList.remove("drag-over");
+                }
+            });
+
+            row.addEventListener("drop", event => {
+                event.preventDefault();
+                row.classList.remove("drag-over");
+
+                const file = event.dataTransfer?.files?.[0];
+                if (!file) {
+                    return;
+                }
+
+                if (!isSupportedUpdatePackage(file.name)) {
+                    showToast("仅支持 .zip 或 .rar 更新包。", "error");
+                    return;
+                }
+
+                openUpdateModal(config, file);
+            });
+        }
+
+        function isSupportedUpdatePackage(fileName) {
+            return /\.(zip|rar)$/i.test(fileName);
+        }
+
+        async function openUpdateModal(config, file) {
+            await closeActiveModal();
+
+            state.pendingUpdate = { config, file };
+            elements.updatePassword.value = "";
+            elements.updateTitle.textContent = `更新 ${config.name}`;
+            elements.updateSubtitle.textContent = `目标目录：${getTargetDirectoryText(config.dllPath)}`;
+            elements.updateFileName.textContent = `${file.name} · ${formatBytes(file.size)}`;
+            elements.uploadUpdateButton.disabled = false;
+            elements.uploadUpdateButton.textContent = "开始更新";
+            showModal("update");
+        }
+
+        function closeUpdateModal() {
+            if (state.activeModal !== "update") {
+                return;
+            }
+
+            state.pendingUpdate = null;
+            elements.updateForm.reset();
+            hideModal();
+        }
+
+        async function uploadUpdatePackage(event) {
+            event.preventDefault();
+
+            if (!state.pendingUpdate) {
+                return;
+            }
+
+            const { config, file } = state.pendingUpdate;
+            const formData = new FormData();
+            formData.append("file", file);
+            formData.append("password", elements.updatePassword.value.trim());
+
+            elements.uploadUpdateButton.disabled = true;
+            elements.uploadUpdateButton.textContent = "更新中...";
+
+            try {
+                const response = await fetch(`/api/processes/${encodeURIComponent(config.id)}/updates`, {
+                    method: "POST",
+                    body: formData
+                });
+
+                const message = await readMessage(response, "更新失败。");
+                if (!response.ok) {
+                    throw new Error(message);
+                }
+
+                showToast(message, "success");
+                closeUpdateModal();
+                await loadConfigs();
+            } catch (error) {
+                console.error(error);
+                showToast(error.message, "error");
+                elements.uploadUpdateButton.disabled = false;
+                elements.uploadUpdateButton.textContent = "开始更新";
+            }
+        }
+
+        async function openHistoryModal(config) {
+            await closeActiveModal();
+
+            elements.historyTitle.textContent = `${config.name} 更新历史`;
+            elements.historySubtitle.textContent = config.id;
+            elements.historyList.replaceChildren(createHistoryEmpty("正在加载更新历史..."));
+            showModal("history");
+
+            try {
+                const response = await fetch(`/api/processes/${encodeURIComponent(config.id)}/updates`);
+                if (!response.ok) {
+                    throw new Error(await readMessage(response, "加载更新历史失败。"));
+                }
+
+                const records = await response.json();
+                renderHistory(records);
+            } catch (error) {
+                console.error(error);
+                elements.historyList.replaceChildren(createHistoryEmpty(error.message));
+            }
+        }
+
+        function closeHistoryModal() {
+            if (state.activeModal !== "history") {
+                return;
+            }
+
+            elements.historyList.replaceChildren();
+            hideModal();
+        }
+
+        function renderHistory(records) {
+            elements.historyList.replaceChildren();
+
+            if (!records || records.length === 0) {
+                elements.historyList.appendChild(createHistoryEmpty("暂无更新记录。"));
+                return;
+            }
+
+            for (const record of records) {
+                const item = document.createElement("article");
+                item.className = "history-item";
+
+                const title = document.createElement("strong");
+                title.textContent = `${getUpdateStatusLabel(record.status)} · ${record.originalFileName}`;
+
+                const details = document.createElement("dl");
+                appendHistoryDetail(details, "开始时间", formatDateTime(record.startedAt));
+                appendHistoryDetail(details, "结束时间", record.finishedAt ? formatDateTime(record.finishedAt) : "-");
+                appendHistoryDetail(details, "文件大小", formatBytes(record.fileSizeBytes));
+                appendHistoryDetail(details, "目标目录", record.targetDirectory);
+                appendHistoryDetail(details, "备份目录", record.backupDirectory || "-");
+                appendHistoryDetail(details, "重启结果", record.restartSucceeded ? "成功" : "未成功");
+                if (record.errorMessage) {
+                    appendHistoryDetail(details, "错误信息", record.errorMessage);
+                }
+
+                item.append(title, details);
+                elements.historyList.appendChild(item);
+            }
+        }
+
+        function appendHistoryDetail(list, label, value) {
+            const term = document.createElement("dt");
+            term.textContent = label;
+            const description = document.createElement("dd");
+            description.textContent = value;
+            list.append(term, description);
+        }
+
+        function createHistoryEmpty(message) {
+            const empty = document.createElement("div");
+            empty.className = "empty-state";
+            empty.textContent = message;
+            return empty;
+        }
+
+        function getUpdateStatusLabel(status) {
+            if (status === "Succeeded") {
+                return "更新成功";
+            }
+
+            if (status === "RestartFailed") {
+                return "重启失败";
+            }
+
+            if (status === "Running") {
+                return "更新中";
+            }
+
+            return "更新失败";
+        }
+
+        function getTargetDirectoryText(dllPath) {
+            const normalized = dllPath.replaceAll("\\", "/");
+            const index = normalized.lastIndexOf("/");
+            return index >= 0 ? normalized.slice(0, index) : ".";
+        }
+
+        function formatBytes(value) {
+            if (!Number.isFinite(value)) {
+                return "-";
+            }
+
+            if (value < 1024) {
+                return `${value} B`;
+            }
+
+            if (value < 1024 * 1024) {
+                return `${(value / 1024).toFixed(1)} KB`;
+            }
+
+            return `${(value / 1024 / 1024).toFixed(1)} MB`;
+        }
+
+        function formatDateTime(value) {
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) {
+                return "-";
+            }
+
+            return date.toLocaleString();
         }
 
         async function openConfigModal(config = null) {
@@ -1183,6 +1513,10 @@
                 await closeTerminalModal();
             } else if (state.activeModal === "config") {
                 closeConfigModal();
+            } else if (state.activeModal === "update") {
+                closeUpdateModal();
+            } else if (state.activeModal === "history") {
+                closeHistoryModal();
             }
         }
 
@@ -1190,6 +1524,8 @@
             state.activeModal = name;
             elements.overlay.style.display = "block";
             elements.configModal.style.display = name === "config" ? "block" : "none";
+            elements.updateModal.style.display = name === "update" ? "block" : "none";
+            elements.historyModal.style.display = name === "history" ? "block" : "none";
             elements.terminalModal.style.display = name === "terminal" ? "block" : "none";
             document.body.style.overflow = "hidden";
         }
@@ -1198,6 +1534,8 @@
             state.activeModal = null;
             elements.overlay.style.display = "none";
             elements.configModal.style.display = "none";
+            elements.updateModal.style.display = "none";
+            elements.historyModal.style.display = "none";
             elements.terminalModal.style.display = "none";
             document.body.style.overflow = "";
         }

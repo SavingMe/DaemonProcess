@@ -112,6 +112,9 @@ ipch/
 *.VC.db
 *.VC.VC.opendb
 processes.json
+update-history.json
+update-backups/
+update-uploads/
 
 # Visual Studio profiler
 *.psess

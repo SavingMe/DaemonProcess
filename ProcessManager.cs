@@ -133,6 +133,19 @@ public class ProcessManager
         }
     }
 
+    public async Task<ProcessConfigDto?> GetProcessConfigAsync(string id)
+    {
+        await _stateLock.WaitAsync();
+        try
+        {
+            return FindProcess(id)?.ToConfigDto();
+        }
+        finally
+        {
+            _stateLock.Release();
+        }
+    }
+
     public async Task<IReadOnlyList<ProcessStatusDto>> GetStatusSnapshotsAsync()
     {
         await _stateLock.WaitAsync();

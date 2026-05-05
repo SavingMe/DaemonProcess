@@ -8,6 +8,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<ProcessConfigStore>();
 builder.Services.AddSingleton<ProcessManager>();
+builder.Services.AddSingleton<ProcessUpdateService>();
 builder.Services.AddHostedService<DaemonWorker>();
 
 var app = builder.Build();
@@ -74,6 +75,43 @@ processApi.MapDelete("/{id}", async (string id, ProcessManager processManager) =
     return deleted
         ? Results.Ok(new { message = "进程配置已删除。" })
         : Results.NotFound(new { message = "未找到对应的进程配置。" });
+});
+
+processApi.MapGet("/{id}/updates", async (string id, ProcessUpdateService updateService) =>
+{
+    var history = await updateService.GetHistoryAsync(id);
+    return Results.Ok(history);
+});
+
+processApi.MapPost("/{id}/updates", async (
+    string id,
+    HttpRequest request,
+    ProcessUpdateService updateService,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var form = await request.ReadFormAsync(cancellationToken);
+        var file = form.Files["file"];
+        if (file == null)
+        {
+            return Results.BadRequest(new { message = "请选择更新包。" });
+        }
+
+        var password = form["password"].FirstOrDefault();
+        var result = await updateService.UpdateAsync(id, file, password, cancellationToken);
+        return result.History.Status == "Succeeded"
+            ? Results.Ok(result)
+            : Results.BadRequest(result);
+    }
+    catch (KeyNotFoundException ex)
+    {
+        return Results.NotFound(new { message = ex.Message });
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
 });
 
 app.Run();
