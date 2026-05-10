@@ -8,9 +8,11 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<ProcessConfigStore>();
 builder.Services.AddSingleton<ProcessPathService>();
+builder.Services.AddSingleton<ProcessLogService>();
 builder.Services.AddSingleton<ProcessManager>();
 builder.Services.AddSingleton<SevenZipService>();
 builder.Services.AddSingleton<ProcessUpdateService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ProcessLogService>());
 builder.Services.AddHostedService<DaemonWorker>();
 
 var app = builder.Build();
@@ -177,6 +179,29 @@ processApi.MapGet("/{id}/updates", async (string id, ProcessUpdateService update
 {
     var snapshots = await updateService.GetSnapshotsAsync(id);
     return Results.Ok(snapshots);
+});
+
+processApi.MapGet("/{id}/logs", async (
+    string id,
+    ProcessLogService logService,
+    DateTimeOffset? from,
+    DateTimeOffset? to,
+    string? level,
+    string? keyword,
+    int? page,
+    int? pageSize,
+    CancellationToken cancellationToken) =>
+{
+    var result = await logService.QueryAsync(
+        id,
+        from,
+        to,
+        level,
+        keyword,
+        page ?? 1,
+        pageSize ?? 200,
+        cancellationToken);
+    return Results.Ok(result);
 });
 
 processApi.MapPost("/{id}/updates", async (

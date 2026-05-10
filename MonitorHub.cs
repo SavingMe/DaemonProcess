@@ -32,8 +32,6 @@ public class MonitorHub : Hub
     public async Task SubscribeLogs(string id)
     {
         await Groups.AddToGroupAsync(Context.ConnectionId, $"log_{id}");
-        var logs = await _processManager.GetRecentLogsAsync(id);
-        await Clients.Caller.SendAsync("ReceiveHistoryLogs", id, logs);
     }
 
     public async Task UnsubscribeLogs(string id)

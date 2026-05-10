@@ -708,6 +708,32 @@
             flex-direction: column;
         }
 
+        .terminal-query {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(150px, 1fr)) minmax(120px, 0.8fr) minmax(180px, 1.2fr) auto auto;
+            gap: 10px;
+            padding: 12px 14px;
+            border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+            background: rgba(15, 23, 42, 0.62);
+        }
+
+        .terminal-query input,
+        .terminal-query select {
+            min-width: 0;
+            border: 1px solid rgba(148, 163, 184, 0.26);
+            border-radius: 10px;
+            padding: 9px 10px;
+            color: #f8fafc;
+            background: rgba(15, 23, 42, 0.9);
+            font-family: inherit;
+            font-size: 12px;
+            outline: none;
+        }
+
+        .terminal-query button {
+            white-space: nowrap;
+        }
+
         .terminal-label {
             padding: 10px 14px;
             border-bottom: 1px solid rgba(148, 163, 184, 0.14);
@@ -718,15 +744,96 @@
 
         .terminal-console {
             flex: 1;
-            margin: 0;
-            padding: 16px 18px 20px;
-            overflow-y: auto;
+            padding: 12px 0 16px;
+            overflow: auto;
             color: var(--terminal-text);
             font-family: "Cascadia Mono", "Consolas", monospace;
-            font-size: 13px;
-            line-height: 1.6;
+            font-size: 12px;
+            line-height: 1.55;
+            background:
+                linear-gradient(180deg, rgba(2, 6, 23, 0.18), rgba(2, 6, 23, 0)),
+                rgba(2, 6, 23, 0.34);
+        }
+
+        .terminal-line {
+            display: grid;
+            grid-template-columns: 54px 82px 64px minmax(0, 1fr);
+            gap: 12px;
+            align-items: start;
+            min-height: 24px;
+            padding: 3px 16px;
+            border-left: 3px solid transparent;
+        }
+
+        .terminal-line:nth-child(even) {
+            background: rgba(148, 163, 184, 0.025);
+        }
+
+        .terminal-line:hover {
+            background: rgba(59, 130, 246, 0.08);
+        }
+
+        .terminal-line.error {
+            border-left-color: #ef4444;
+            background: rgba(127, 29, 29, 0.16);
+        }
+
+        .terminal-line.info {
+            border-left-color: rgba(34, 197, 94, 0.42);
+        }
+
+        .terminal-line.system {
+            border-left-color: rgba(59, 130, 246, 0.55);
+            color: #bfdbfe;
+        }
+
+        .terminal-index {
+            color: #475569;
+            text-align: right;
+            user-select: none;
+        }
+
+        .terminal-time {
+            color: #93a4b8;
+            white-space: nowrap;
+        }
+
+        .terminal-level {
+            width: fit-content;
+            min-width: 48px;
+            padding: 1px 7px;
+            border-radius: 999px;
+            color: #bbf7d0;
+            background: rgba(22, 163, 74, 0.18);
+            font-size: 11px;
+            font-weight: 800;
+            text-align: center;
+            letter-spacing: 0.04em;
+        }
+
+        .terminal-line.error .terminal-level {
+            color: #fecaca;
+            background: rgba(220, 38, 38, 0.24);
+        }
+
+        .terminal-line.system .terminal-level {
+            color: #bfdbfe;
+            background: rgba(37, 99, 235, 0.22);
+        }
+
+        .terminal-message {
+            min-width: 0;
+            color: #d7f9da;
             white-space: pre-wrap;
-            word-break: break-word;
+            overflow-wrap: anywhere;
+        }
+
+        .terminal-line.error .terminal-message {
+            color: #fecaca;
+        }
+
+        .terminal-line.system .terminal-message {
+            color: #bfdbfe;
         }
 
         @media (max-width: 960px) {
@@ -744,6 +851,10 @@
             }
 
             .field-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .terminal-query {
                 grid-template-columns: 1fr;
             }
 
@@ -921,7 +1032,19 @@
         <div class="terminal-body">
             <div class="terminal-frame">
                 <div class="terminal-label" id="terminalLabel">$ tail -f logs/process.log</div>
-                <pre class="terminal-console" id="logConsole"></pre>
+                <div class="terminal-query">
+                    <input id="logFrom" type="datetime-local" aria-label="开始时间">
+                    <input id="logTo" type="datetime-local" aria-label="结束时间">
+                    <select id="logLevel" aria-label="日志级别">
+                        <option value="">全部级别</option>
+                        <option value="Info">Info</option>
+                        <option value="Error">Error</option>
+                    </select>
+                    <input id="logKeyword" type="search" placeholder="关键字" aria-label="日志关键字">
+                    <button type="button" class="btn-ghost" id="queryLogsButton">查询</button>
+                    <button type="button" class="btn-secondary" id="loadMoreLogsButton">更多</button>
+                </div>
+                <div class="terminal-console" id="logConsole" role="log" aria-live="polite"></div>
             </div>
         </div>
     </section>
@@ -935,6 +1058,9 @@
             selectedId: null,
             editingId: null,
             currentLogId: null,
+            logPage: 1,
+            logPageSize: 200,
+            logTotal: 0,
             pendingUpdate: null,
             activeModal: null,
             historyDrag: null
@@ -973,6 +1099,12 @@
             terminalMeta: document.getElementById("terminalMeta"),
             terminalLabel: document.getElementById("terminalLabel"),
             logConsole: document.getElementById("logConsole"),
+            logFrom: document.getElementById("logFrom"),
+            logTo: document.getElementById("logTo"),
+            logLevel: document.getElementById("logLevel"),
+            logKeyword: document.getElementById("logKeyword"),
+            queryLogsButton: document.getElementById("queryLogsButton"),
+            loadMoreLogsButton: document.getElementById("loadMoreLogsButton"),
             closeTerminalButton: document.getElementById("closeTerminalButton"),
             updateModal: document.getElementById("updateModal"),
             updateForm: document.getElementById("updateForm"),
@@ -1006,9 +1138,12 @@
                 return;
             }
 
-            elements.logConsole.textContent = logs.length > 0
-                ? `${logs.join("\n")}\n`
-                : "[日志缓冲区为空]\n";
+            clearLogConsole();
+            if (logs.length > 0) {
+                appendLogLines(logs.map(parseRealtimeLogLine));
+            } else {
+                appendSystemLogLine("日志缓冲区为空");
+            }
             scrollTerminalToBottom();
         });
 
@@ -1017,7 +1152,7 @@
                 return;
             }
 
-            elements.logConsole.textContent += `${logText}\n`;
+            appendLogLine(parseRealtimeLogLine(logText));
             scrollTerminalToBottom();
         });
 
@@ -1066,6 +1201,8 @@
         });
         elements.closeConfigButton.addEventListener("click", closeConfigModal);
         elements.closeTerminalButton.addEventListener("click", () => closeActiveModal());
+        elements.queryLogsButton.addEventListener("click", () => queryPersistedLogs(1));
+        elements.loadMoreLogsButton.addEventListener("click", () => queryPersistedLogs(state.logPage + 1, true));
         elements.updateForm.addEventListener("submit", uploadUpdatePackage);
         elements.closeUpdateButton.addEventListener("click", closeUpdateModal);
         elements.cancelUpdateButton.addEventListener("click", closeUpdateModal);
@@ -1905,11 +2042,14 @@
             }
 
             state.currentLogId = id;
-            elements.logConsole.textContent = "正在连接日志流...\n";
+            resetLogQueryState();
+            clearLogConsole();
+            appendSystemLogLine("正在加载历史日志...");
             refreshTerminalMeta();
             showModal("terminal");
 
             try {
+                await queryPersistedLogs(1);
                 await connection.invoke("SubscribeLogs", id);
             } catch (error) {
                 console.error(error);
@@ -1948,6 +2088,196 @@
             } else if (state.activeModal === "history") {
                 closeHistoryModal();
             }
+        }
+
+        function resetLogQueryState() {
+            state.logPage = 1;
+            state.logTotal = 0;
+            elements.logFrom.value = "";
+            elements.logTo.value = "";
+            elements.logLevel.value = "";
+            elements.logKeyword.value = "";
+            elements.loadMoreLogsButton.disabled = true;
+        }
+
+        async function queryPersistedLogs(page = 1, append = false) {
+            if (!state.currentLogId) {
+                return;
+            }
+
+            const params = new URLSearchParams({
+                page: String(page),
+                pageSize: String(state.logPageSize)
+            });
+            if (elements.logFrom.value) {
+                params.set("from", new Date(elements.logFrom.value).toISOString());
+            }
+            if (elements.logTo.value) {
+                params.set("to", new Date(elements.logTo.value).toISOString());
+            }
+            if (elements.logLevel.value) {
+                params.set("level", elements.logLevel.value);
+            }
+            if (elements.logKeyword.value.trim()) {
+                params.set("keyword", elements.logKeyword.value.trim());
+            }
+
+            elements.queryLogsButton.disabled = true;
+            elements.loadMoreLogsButton.disabled = true;
+            try {
+                const response = await fetch(`/api/processes/${encodeURIComponent(state.currentLogId)}/logs?${params}`);
+                if (!response.ok) {
+                    throw new Error(await readMessage(response, "查询历史日志失败。"));
+                }
+
+                const result = await response.json();
+                state.logPage = result.page;
+                state.logTotal = result.total;
+                const lines = result.items.map(toLogLineModel);
+                if (append && elements.logConsole.children.length > 0) {
+                    const previousScrollHeight = elements.logConsole.scrollHeight;
+                    const previousScrollTop = elements.logConsole.scrollTop;
+                    prependLogLines(lines);
+                    elements.logConsole.scrollTop = previousScrollTop + (elements.logConsole.scrollHeight - previousScrollHeight);
+                } else {
+                    clearLogConsole();
+                    if (lines.length > 0) {
+                        appendLogLines(lines);
+                    } else {
+                        appendSystemLogLine("没有匹配的历史日志");
+                    }
+                    scrollTerminalToBottom();
+                }
+                elements.loadMoreLogsButton.disabled = result.page * result.pageSize >= result.total;
+            } catch (error) {
+                console.error(error);
+                showToast(error.message, "error");
+            } finally {
+                elements.queryLogsButton.disabled = false;
+            }
+        }
+
+        function toLogLineModel(item) {
+            const date = new Date(item.timestamp);
+            const fallback = parseRealtimeLogLine(item.rawLine || item.message || "");
+            return {
+                time: Number.isNaN(date.getTime()) ? fallback.time : formatLogTime(date),
+                level: item.level || fallback.level,
+                stream: item.stream || fallback.stream,
+                message: item.message || fallback.message,
+                rawLine: item.rawLine || fallback.rawLine
+            };
+        }
+
+        function parseRealtimeLogLine(rawLine) {
+            const raw = String(rawLine ?? "");
+            const match = raw.match(/^\[(\d{2}:\d{2}:\d{2})\]\s*(.*)$/);
+            const time = match ? match[1] : formatLogTime(new Date());
+            let message = match ? match[2] : raw;
+            const isError = message.startsWith("[ERROR]");
+            if (isError) {
+                message = message.replace(/^\[ERROR\]\s*/, "");
+            }
+
+            return {
+                time,
+                level: isError ? "Error" : "Info",
+                stream: isError ? "stderr" : "stdout",
+                message,
+                rawLine: raw
+            };
+        }
+
+        function appendSystemLogLine(message) {
+            appendLogLine({
+                time: formatLogTime(new Date()),
+                level: "SYSTEM",
+                stream: "system",
+                message,
+                rawLine: message
+            });
+        }
+
+        function appendLogLines(lines) {
+            for (const line of lines) {
+                appendLogLine(line, false);
+            }
+            trimLogLines();
+        }
+
+        function prependLogLines(lines) {
+            const fragment = document.createDocumentFragment();
+            for (const line of lines) {
+                fragment.appendChild(createLogLineElement(line));
+            }
+            elements.logConsole.prepend(fragment);
+            trimLogLines();
+        }
+
+        function appendLogLine(line, trim = true) {
+            elements.logConsole.appendChild(createLogLineElement(line));
+            if (trim) {
+                trimLogLines();
+            }
+        }
+
+        function createLogLineElement(line) {
+            const row = document.createElement("div");
+            const level = String(line.level || "Info");
+            const isError = level.toLowerCase() === "error" || line.stream === "stderr";
+            const isSystem = level.toLowerCase() === "system" || line.stream === "system";
+            row.className = `terminal-line ${isSystem ? "system" : isError ? "error" : "info"}`;
+
+            const index = document.createElement("span");
+            index.className = "terminal-index";
+            index.textContent = String(elements.logConsole.children.length + 1).padStart(4, "0");
+
+            const time = document.createElement("span");
+            time.className = "terminal-time";
+            time.textContent = line.time || "--:--:--";
+
+            const levelNode = document.createElement("span");
+            levelNode.className = "terminal-level";
+            levelNode.textContent = isSystem ? "SYS" : isError ? "ERR" : "INFO";
+
+            const message = document.createElement("span");
+            message.className = "terminal-message";
+            message.textContent = line.message || "";
+
+            row.append(index, time, levelNode, message);
+            return row;
+        }
+
+        function clearLogConsole() {
+            elements.logConsole.replaceChildren();
+        }
+
+        function trimLogLines() {
+            const maxLines = 5000;
+            while (elements.logConsole.children.length > maxLines) {
+                elements.logConsole.firstElementChild?.remove();
+            }
+            refreshLogLineIndexes();
+        }
+
+        function refreshLogLineIndexes() {
+            let index = 1;
+            for (const row of elements.logConsole.children) {
+                const indexNode = row.querySelector(".terminal-index");
+                if (indexNode) {
+                    indexNode.textContent = String(index).padStart(4, "0");
+                }
+                index++;
+            }
+        }
+
+        function formatLogTime(date) {
+            return date.toLocaleTimeString("zh-CN", {
+                hour12: false,
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit"
+            });
         }
 
         function showModal(name) {

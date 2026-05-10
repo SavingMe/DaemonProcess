@@ -81,3 +81,23 @@ public sealed class SevenZipStatusDto
     public bool PackageFound { get; set; }
     public string Message { get; set; } = string.Empty;
 }
+
+public sealed class ProcessLogEntryDto
+{
+    public long Id { get; set; }
+    public string ProcessId { get; set; } = string.Empty;
+    public string ProcessName { get; set; } = string.Empty;
+    public DateTimeOffset Timestamp { get; set; }
+    public string Stream { get; set; } = string.Empty;
+    public string Level { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
+    public string RawLine { get; set; } = string.Empty;
+}
+
+public sealed class ProcessLogQueryResultDto
+{
+    public int Page { get; set; }
+    public int PageSize { get; set; }
+    public int Total { get; set; }
+    public IReadOnlyList<ProcessLogEntryDto> Items { get; set; } = Array.Empty<ProcessLogEntryDto>();
+}

@@ -11,15 +11,22 @@ public class ProcessManager
     private readonly ILogger<ProcessManager> _logger;
     private readonly ProcessConfigStore _configStore;
     private readonly ProcessPathService _pathService;
+    private readonly ProcessLogService _logService;
     private readonly SemaphoreSlim _stateLock = new(1, 1);
     private readonly int _processorCount = Environment.ProcessorCount;
     private readonly List<ProcessItem> _processes;
 
-    public ProcessManager(IHubContext<MonitorHub> hubContext, ProcessConfigStore configStore, ProcessPathService pathService, ILogger<ProcessManager> logger)
+    public ProcessManager(
+        IHubContext<MonitorHub> hubContext,
+        ProcessConfigStore configStore,
+        ProcessPathService pathService,
+        ProcessLogService logService,
+        ILogger<ProcessManager> logger)
     {
         _hubContext = hubContext;
         _configStore = configStore;
         _pathService = pathService;
+        _logService = logService;
         _logger = logger;
         _processes = _configStore.Load().Select(CreateProcessItem).ToList();
     }
@@ -448,12 +455,12 @@ public class ProcessManager
                 EnableRaisingEvents = true
             };
 
-            process.OutputDataReceived += (_, e) => HandleLogOutput(item, e.Data);
+            process.OutputDataReceived += (_, e) => HandleLogOutput(item, e.Data, "stdout", "Info");
             process.ErrorDataReceived += (_, e) =>
             {
                 if (!string.IsNullOrWhiteSpace(e.Data))
                 {
-                    HandleLogOutput(item, $"[ERROR] {e.Data}");
+                    HandleLogOutput(item, e.Data, "stderr", "Error");
                 }
             };
 
@@ -582,15 +589,29 @@ public class ProcessManager
         }
     }
 
-    private void HandleLogOutput(ProcessItem item, string? log)
+    private void HandleLogOutput(ProcessItem item, string? log, string stream, string level)
     {
         if (string.IsNullOrWhiteSpace(log))
         {
             return;
         }
 
-        var timeLog = $"[{DateTime.Now:HH:mm:ss}] {log}";
+        var timestamp = DateTimeOffset.Now;
+        var displayMessage = string.Equals(level, "Error", StringComparison.OrdinalIgnoreCase)
+            ? $"[ERROR] {log}"
+            : log;
+        var timeLog = $"[{timestamp:HH:mm:ss}] {displayMessage}";
         item.RecentLogs.Enqueue(timeLog);
+        _logService.Enqueue(new ProcessLogEntryDto
+        {
+            ProcessId = item.Id,
+            ProcessName = item.Name,
+            Timestamp = timestamp,
+            Stream = stream,
+            Level = level,
+            Message = log,
+            RawLine = timeLog
+        });
 
         while (item.RecentLogs.Count > 100)
         {

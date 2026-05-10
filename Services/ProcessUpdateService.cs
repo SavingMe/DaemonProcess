@@ -416,6 +416,15 @@ public sealed class ProcessUpdateService
         processStartInfo.ArgumentList.Add(archivePath);
         processStartInfo.ArgumentList.Add("-y");
         processStartInfo.ArgumentList.Add($"-o{targetDirectory}");
+        if (IsZipArchive(archivePath))
+        {
+            var zipFileNameCodePage = GetZipFileNameCodePage();
+            if (!string.IsNullOrWhiteSpace(zipFileNameCodePage))
+            {
+                processStartInfo.ArgumentList.Add($"-mcp={zipFileNameCodePage}");
+            }
+        }
+
         if (!string.IsNullOrWhiteSpace(password))
         {
             processStartInfo.ArgumentList.Add($"-p{password}");
@@ -442,6 +451,16 @@ public sealed class ProcessUpdateService
         {
             throw new InvalidOperationException($"未找到 7-Zip，请配置 UpdatePackage:SevenZipPath。{ex.Message}", ex);
         }
+    }
+
+    private static bool IsZipArchive(string archivePath)
+    {
+        return string.Equals(Path.GetExtension(archivePath), ".zip", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private string GetZipFileNameCodePage()
+    {
+        return _configuration["UpdatePackage:ZipFileNameCodePage"]?.Trim() ?? "936";
     }
 
     private async Task<List<ProcessSnapshotDto>> LoadSnapshotsAsync()
