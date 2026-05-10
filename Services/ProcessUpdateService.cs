@@ -399,6 +399,80 @@ public sealed class ProcessUpdateService
     {
         Directory.CreateDirectory(targetDirectory);
 
+        if (IsZipArchive(archivePath) && IsAutoZipFileNameCodePage())
+        {
+            await ExtractZipArchiveAutoAsync(archivePath, targetDirectory, password, cancellationToken);
+            return;
+        }
+
+        var codePage = IsZipArchive(archivePath) ? GetZipFileNameCodePage() : null;
+        await ExtractArchiveToDirectoryAsync(archivePath, targetDirectory, password, codePage, cancellationToken);
+    }
+
+    private async Task ExtractZipArchiveAutoAsync(string archivePath, string targetDirectory, string? password, CancellationToken cancellationToken)
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"processdaemon-extract-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+
+        var failures = new List<string>();
+        (string Directory, int Score, string Label)? best = null;
+
+        try
+        {
+            foreach (var codePage in GetZipAutoCodePageCandidates())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var label = string.IsNullOrWhiteSpace(codePage) ? "default" : codePage;
+                var candidateDirectory = Path.Combine(tempRoot, label);
+                Directory.CreateDirectory(candidateDirectory);
+
+                try
+                {
+                    await ExtractArchiveToDirectoryAsync(archivePath, candidateDirectory, password, codePage, cancellationToken);
+                    var score = ScoreExtractedFileNames(candidateDirectory);
+                    if (best == null || score < best.Value.Score)
+                    {
+                        best = (candidateDirectory, score, label);
+                    }
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
+                {
+                    failures.Add($"{label}: {ex.Message}");
+                }
+            }
+
+            if (best == null)
+            {
+                throw new InvalidOperationException($"ZIP 解压失败：{string.Join("；", failures)}");
+            }
+
+            _logger.LogInformation("ZIP 文件名编码自动选择 {CodePage}，评分 {Score}。", best.Value.Label, best.Value.Score);
+            _pathService.CopyDirectoryFast(best.Value.Directory, targetDirectory);
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(tempRoot))
+                {
+                    Directory.Delete(tempRoot, recursive: true);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "清理解压临时目录 {TempRoot} 失败。", tempRoot);
+            }
+        }
+    }
+
+    private async Task ExtractArchiveToDirectoryAsync(
+        string archivePath,
+        string targetDirectory,
+        string? password,
+        string? zipFileNameCodePage,
+        CancellationToken cancellationToken)
+    {
         var sevenZipPath = await _sevenZipService.GetExecutablePathAsync(cancellationToken);
 
         var processStartInfo = new ProcessStartInfo
@@ -416,13 +490,9 @@ public sealed class ProcessUpdateService
         processStartInfo.ArgumentList.Add(archivePath);
         processStartInfo.ArgumentList.Add("-y");
         processStartInfo.ArgumentList.Add($"-o{targetDirectory}");
-        if (IsZipArchive(archivePath))
+        if (IsZipArchive(archivePath) && !string.IsNullOrWhiteSpace(zipFileNameCodePage))
         {
-            var zipFileNameCodePage = GetZipFileNameCodePage();
-            if (!string.IsNullOrWhiteSpace(zipFileNameCodePage))
-            {
-                processStartInfo.ArgumentList.Add($"-mcp={zipFileNameCodePage}");
-            }
+            processStartInfo.ArgumentList.Add($"-mcp={zipFileNameCodePage}");
         }
 
         if (!string.IsNullOrWhiteSpace(password))
@@ -458,9 +528,73 @@ public sealed class ProcessUpdateService
         return string.Equals(Path.GetExtension(archivePath), ".zip", StringComparison.OrdinalIgnoreCase);
     }
 
+    private bool IsAutoZipFileNameCodePage()
+    {
+        var value = GetZipFileNameCodePage();
+        return string.IsNullOrWhiteSpace(value) ||
+            value.Equals("auto", StringComparison.OrdinalIgnoreCase);
+    }
+
     private string GetZipFileNameCodePage()
     {
-        return _configuration["UpdatePackage:ZipFileNameCodePage"]?.Trim() ?? "936";
+        return _configuration["UpdatePackage:ZipFileNameCodePage"]?.Trim() ?? "auto";
+    }
+
+    private static IEnumerable<string?> GetZipAutoCodePageCandidates()
+    {
+        yield return null;
+        yield return "65001";
+        yield return "936";
+    }
+
+    private static int ScoreExtractedFileNames(string directory)
+    {
+        var score = 0;
+        foreach (var path in Directory.EnumerateFileSystemEntries(directory, "*", SearchOption.AllDirectories))
+        {
+            var relativePath = Path.GetRelativePath(directory, path);
+            foreach (var part in relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+            {
+                score += ScoreFileNamePart(part);
+            }
+        }
+
+        return score;
+    }
+
+    private static int ScoreFileNamePart(string name)
+    {
+        const string suspiciousChars = "宸插惎惧姝ゅ崟鎺愭枃浠堕噺鍙傛暟鏈嶅姟娴嬭瘯缂栫爜涓嶅彲";
+
+        var score = 0;
+        foreach (var ch in name)
+        {
+            if (ch == '\uFFFD')
+            {
+                score += 100;
+            }
+            else if (char.IsControl(ch))
+            {
+                score += 80;
+            }
+            else if (suspiciousChars.Contains(ch))
+            {
+                score += 8;
+            }
+            else if (ch is 'Ã' or 'Â' or '¤' or '€')
+            {
+                score += 8;
+            }
+        }
+
+        if (name.Contains("$\\", StringComparison.Ordinal) ||
+            name.Contains("\\x", StringComparison.OrdinalIgnoreCase) ||
+            name.Contains("\\", StringComparison.Ordinal))
+        {
+            score += 30;
+        }
+
+        return score;
     }
 
     private async Task<List<ProcessSnapshotDto>> LoadSnapshotsAsync()

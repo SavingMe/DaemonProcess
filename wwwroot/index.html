@@ -710,7 +710,7 @@
 
         .terminal-query {
             display: grid;
-            grid-template-columns: repeat(2, minmax(150px, 1fr)) minmax(120px, 0.8fr) minmax(180px, 1.2fr) auto auto;
+            grid-template-columns: repeat(2, minmax(150px, 1fr)) minmax(120px, 0.8fr) minmax(180px, 1.2fr) repeat(5, auto);
             gap: 10px;
             padding: 12px 14px;
             border-bottom: 1px solid rgba(148, 163, 184, 0.14);
@@ -732,6 +732,28 @@
 
         .terminal-query button {
             white-space: nowrap;
+        }
+
+        .terminal-pager {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 8px 14px;
+            border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+            color: var(--terminal-muted);
+            background: rgba(15, 23, 42, 0.42);
+            font-family: "Cascadia Mono", "Consolas", monospace;
+            font-size: 12px;
+        }
+
+        .terminal-tail-state {
+            color: #86efac;
+            white-space: nowrap;
+        }
+
+        .terminal-tail-state.paused {
+            color: #fbbf24;
         }
 
         .terminal-label {
@@ -856,6 +878,11 @@
 
             .terminal-query {
                 grid-template-columns: 1fr;
+            }
+
+            .terminal-pager {
+                align-items: flex-start;
+                flex-direction: column;
             }
 
             .card-header,
@@ -1042,7 +1069,14 @@
                     </select>
                     <input id="logKeyword" type="search" placeholder="关键字" aria-label="日志关键字">
                     <button type="button" class="btn-ghost" id="queryLogsButton">查询</button>
-                    <button type="button" class="btn-secondary" id="loadMoreLogsButton">更多</button>
+                    <button type="button" class="btn-secondary" id="loadMoreLogsButton">加载更早</button>
+                    <button type="button" class="btn-ghost" id="latestLogsButton">回到最新</button>
+                    <button type="button" class="btn-secondary" id="exportLogsButton">导出日志</button>
+                    <button type="button" class="btn-danger" id="deleteLogsButton">删除日志</button>
+                </div>
+                <div class="terminal-pager">
+                    <span id="logPageStatus">第 1 页 / 共 0 条</span>
+                    <span class="terminal-tail-state" id="logTailState">实时尾随</span>
                 </div>
                 <div class="terminal-console" id="logConsole" role="log" aria-live="polite"></div>
             </div>
@@ -1061,6 +1095,7 @@
             logPage: 1,
             logPageSize: 200,
             logTotal: 0,
+            logFollowingLatest: true,
             pendingUpdate: null,
             activeModal: null,
             historyDrag: null
@@ -1105,6 +1140,11 @@
             logKeyword: document.getElementById("logKeyword"),
             queryLogsButton: document.getElementById("queryLogsButton"),
             loadMoreLogsButton: document.getElementById("loadMoreLogsButton"),
+            latestLogsButton: document.getElementById("latestLogsButton"),
+            exportLogsButton: document.getElementById("exportLogsButton"),
+            deleteLogsButton: document.getElementById("deleteLogsButton"),
+            logPageStatus: document.getElementById("logPageStatus"),
+            logTailState: document.getElementById("logTailState"),
             closeTerminalButton: document.getElementById("closeTerminalButton"),
             updateModal: document.getElementById("updateModal"),
             updateForm: document.getElementById("updateForm"),
@@ -1152,8 +1192,14 @@
                 return;
             }
 
+            const shouldFollow = state.logFollowingLatest && isTerminalNearBottom();
             appendLogLine(parseRealtimeLogLine(logText));
-            scrollTerminalToBottom();
+            if (shouldFollow) {
+                scrollTerminalToBottom();
+            } else if (state.logPage === 1) {
+                state.logFollowingLatest = false;
+            }
+            updateLogPagerState();
         });
 
         connection.onreconnecting(() => setConnectionState("重连中", "#f59e0b"));
@@ -1203,6 +1249,10 @@
         elements.closeTerminalButton.addEventListener("click", () => closeActiveModal());
         elements.queryLogsButton.addEventListener("click", () => queryPersistedLogs(1));
         elements.loadMoreLogsButton.addEventListener("click", () => queryPersistedLogs(state.logPage + 1, true));
+        elements.latestLogsButton.addEventListener("click", () => queryPersistedLogs(1));
+        elements.exportLogsButton.addEventListener("click", exportLogs);
+        elements.deleteLogsButton.addEventListener("click", deleteLogs);
+        elements.logConsole.addEventListener("scroll", handleTerminalScroll);
         elements.updateForm.addEventListener("submit", uploadUpdatePackage);
         elements.closeUpdateButton.addEventListener("click", closeUpdateModal);
         elements.cancelUpdateButton.addEventListener("click", closeUpdateModal);
@@ -2093,11 +2143,16 @@
         function resetLogQueryState() {
             state.logPage = 1;
             state.logTotal = 0;
+            state.logFollowingLatest = true;
             elements.logFrom.value = "";
             elements.logTo.value = "";
             elements.logLevel.value = "";
             elements.logKeyword.value = "";
             elements.loadMoreLogsButton.disabled = true;
+            elements.latestLogsButton.disabled = true;
+            elements.exportLogsButton.disabled = false;
+            elements.deleteLogsButton.disabled = false;
+            updateLogPagerState();
         }
 
         async function queryPersistedLogs(page = 1, append = false) {
@@ -2105,25 +2160,14 @@
                 return;
             }
 
-            const params = new URLSearchParams({
+            const params = buildLogQueryParams({
                 page: String(page),
                 pageSize: String(state.logPageSize)
             });
-            if (elements.logFrom.value) {
-                params.set("from", new Date(elements.logFrom.value).toISOString());
-            }
-            if (elements.logTo.value) {
-                params.set("to", new Date(elements.logTo.value).toISOString());
-            }
-            if (elements.logLevel.value) {
-                params.set("level", elements.logLevel.value);
-            }
-            if (elements.logKeyword.value.trim()) {
-                params.set("keyword", elements.logKeyword.value.trim());
-            }
 
             elements.queryLogsButton.disabled = true;
             elements.loadMoreLogsButton.disabled = true;
+            elements.latestLogsButton.disabled = true;
             try {
                 const response = await fetch(`/api/processes/${encodeURIComponent(state.currentLogId)}/logs?${params}`);
                 if (!response.ok) {
@@ -2137,9 +2181,11 @@
                 if (append && elements.logConsole.children.length > 0) {
                     const previousScrollHeight = elements.logConsole.scrollHeight;
                     const previousScrollTop = elements.logConsole.scrollTop;
+                    state.logFollowingLatest = false;
                     prependLogLines(lines);
                     elements.logConsole.scrollTop = previousScrollTop + (elements.logConsole.scrollHeight - previousScrollHeight);
                 } else {
+                    state.logFollowingLatest = true;
                     clearLogConsole();
                     if (lines.length > 0) {
                         appendLogLines(lines);
@@ -2149,12 +2195,127 @@
                     scrollTerminalToBottom();
                 }
                 elements.loadMoreLogsButton.disabled = result.page * result.pageSize >= result.total;
+                updateLogPagerState();
             } catch (error) {
                 console.error(error);
                 showToast(error.message, "error");
             } finally {
                 elements.queryLogsButton.disabled = false;
+                elements.loadMoreLogsButton.disabled = state.logPage * state.logPageSize >= state.logTotal;
+                elements.latestLogsButton.disabled = state.logFollowingLatest;
             }
+        }
+
+        function buildLogQueryParams(extra = {}) {
+            const params = new URLSearchParams(extra);
+            if (elements.logFrom.value) {
+                params.set("from", new Date(elements.logFrom.value).toISOString());
+            }
+            if (elements.logTo.value) {
+                params.set("to", new Date(elements.logTo.value).toISOString());
+            }
+            if (elements.logLevel.value) {
+                params.set("level", elements.logLevel.value);
+            }
+            if (elements.logKeyword.value.trim()) {
+                params.set("keyword", elements.logKeyword.value.trim());
+            }
+            return params;
+        }
+
+        async function exportLogs() {
+            if (!state.currentLogId) {
+                return;
+            }
+
+            elements.exportLogsButton.disabled = true;
+            try {
+                const params = buildLogQueryParams();
+                const response = await fetch(`/api/processes/${encodeURIComponent(state.currentLogId)}/logs/export?${params}`);
+                if (!response.ok) {
+                    throw new Error(await readMessage(response, "导出日志失败。"));
+                }
+
+                const blob = await response.blob();
+                const disposition = response.headers.get("Content-Disposition") || "";
+                const match = disposition.match(/filename\*?=(?:UTF-8'')?("?)([^";]+)\1/i);
+                const fileName = match ? decodeURIComponent(match[2]) : `process-${state.currentLogId}-logs.txt`;
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.href = url;
+                link.download = fileName;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                URL.revokeObjectURL(url);
+                showToast("日志导出已开始。", "success");
+            } catch (error) {
+                console.error(error);
+                showToast(error.message, "error");
+            } finally {
+                elements.exportLogsButton.disabled = false;
+            }
+        }
+
+        async function deleteLogs() {
+            if (!state.currentLogId) {
+                return;
+            }
+
+            const config = getSelectedConfig();
+            const name = config?.name || state.currentLogId;
+            if (!confirm(`确认删除 ${name} 的全部历史日志？此操作不会停止实时日志，但历史记录无法恢复。`)) {
+                return;
+            }
+
+            elements.deleteLogsButton.disabled = true;
+            try {
+                const response = await fetch(`/api/processes/${encodeURIComponent(state.currentLogId)}/logs`, {
+                    method: "DELETE"
+                });
+                if (!response.ok) {
+                    throw new Error(await readMessage(response, "删除日志失败。"));
+                }
+
+                const result = await response.json();
+                state.logPage = 1;
+                state.logTotal = 0;
+                state.logFollowingLatest = true;
+                clearLogConsole();
+                appendSystemLogLine(result.message || "历史日志已删除。");
+                scrollTerminalToBottom();
+                updateLogPagerState();
+                showToast(result.message || "历史日志已删除。", "success");
+            } catch (error) {
+                console.error(error);
+                showToast(error.message, "error");
+            } finally {
+                elements.deleteLogsButton.disabled = false;
+            }
+        }
+
+        function handleTerminalScroll() {
+            if (!state.currentLogId || state.logPage !== 1) {
+                return;
+            }
+
+            state.logFollowingLatest = isTerminalNearBottom();
+            updateLogPagerState();
+        }
+
+        function updateLogPagerState() {
+            if (!elements.logPageStatus || !elements.logTailState) {
+                return;
+            }
+
+            const total = state.logTotal;
+            const shown = Math.min(total, state.logPage * state.logPageSize);
+            elements.logPageStatus.textContent = state.logPage <= 1
+                ? `第 1 页 / 共 ${total} 条`
+                : `已加载 1-${state.logPage} 页，显示 ${shown}/${total} 条`;
+            elements.logTailState.textContent = state.logFollowingLatest ? "实时尾随" : "浏览历史，实时不跳底";
+            elements.logTailState.classList.toggle("paused", !state.logFollowingLatest);
+            elements.latestLogsButton.disabled = state.logFollowingLatest;
         }
 
         function toLogLineModel(item) {
@@ -2361,6 +2522,11 @@
 
         function scrollTerminalToBottom() {
             elements.logConsole.scrollTop = elements.logConsole.scrollHeight;
+        }
+
+        function isTerminalNearBottom() {
+            const threshold = 48;
+            return elements.logConsole.scrollHeight - elements.logConsole.scrollTop - elements.logConsole.clientHeight <= threshold;
         }
 
         async function readMessage(response, fallback) {

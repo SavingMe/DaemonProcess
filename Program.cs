@@ -2,7 +2,9 @@ using ProcessDaemon.Hubs;
 using ProcessDaemon.Models;
 using ProcessDaemon.Services;
 using ProcessDaemon.Workers;
+using System.Text;
 
+Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddSignalR();
@@ -181,6 +183,23 @@ processApi.MapGet("/{id}/updates", async (string id, ProcessUpdateService update
     return Results.Ok(snapshots);
 });
 
+processApi.MapGet("/{id}/logs/export", (
+    string id,
+    ProcessLogService logService,
+    DateTimeOffset? from,
+    DateTimeOffset? to,
+    string? level,
+    string? keyword,
+    CancellationToken cancellationToken) =>
+{
+    var safeId = string.Concat(id.Select(ch => char.IsLetterOrDigit(ch) || ch is '-' or '_' ? ch : '-'));
+    var fileName = $"process-{safeId}-logs-{DateTimeOffset.Now:yyyyMMdd-HHmmss}.txt";
+    return Results.Stream(
+        stream => logService.ExportAsync(id, from, to, level, keyword, stream, cancellationToken),
+        "text/plain; charset=utf-8",
+        fileName);
+});
+
 processApi.MapGet("/{id}/logs", async (
     string id,
     ProcessLogService logService,
@@ -202,6 +221,19 @@ processApi.MapGet("/{id}/logs", async (
         pageSize ?? 200,
         cancellationToken);
     return Results.Ok(result);
+});
+
+processApi.MapDelete("/{id}/logs", async (
+    string id,
+    ProcessLogService logService,
+    CancellationToken cancellationToken) =>
+{
+    var deleted = await logService.DeleteProcessLogsAsync(id, cancellationToken);
+    return Results.Ok(new
+    {
+        message = deleted > 0 ? $"已删除 {deleted} 条日志。" : "没有可删除的历史日志。",
+        deleted
+    });
 });
 
 processApi.MapPost("/{id}/updates", async (

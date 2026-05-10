@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.SignalR;
 using ProcessDaemon.Hubs;
 using ProcessDaemon.Models;
 using System.Diagnostics;
+using System.Text;
 
 namespace ProcessDaemon.Services;
 
@@ -12,6 +13,7 @@ public class ProcessManager
     private readonly ProcessConfigStore _configStore;
     private readonly ProcessPathService _pathService;
     private readonly ProcessLogService _logService;
+    private readonly IConfiguration _configuration;
     private readonly SemaphoreSlim _stateLock = new(1, 1);
     private readonly int _processorCount = Environment.ProcessorCount;
     private readonly List<ProcessItem> _processes;
@@ -21,12 +23,14 @@ public class ProcessManager
         ProcessConfigStore configStore,
         ProcessPathService pathService,
         ProcessLogService logService,
+        IConfiguration configuration,
         ILogger<ProcessManager> logger)
     {
         _hubContext = hubContext;
         _configStore = configStore;
         _pathService = pathService;
         _logService = logService;
+        _configuration = configuration;
         _logger = logger;
         _processes = _configStore.Load().Select(CreateProcessItem).ToList();
     }
@@ -438,9 +442,7 @@ public class ProcessManager
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
-                CreateNoWindow = true,
-                StandardOutputEncoding = System.Text.Encoding.UTF8,
-                StandardErrorEncoding = System.Text.Encoding.UTF8
+                CreateNoWindow = true
             };
 
             startInfo.ArgumentList.Add(_pathService.ResolveDllPath(item.DllPath));
@@ -455,18 +457,9 @@ public class ProcessManager
                 EnableRaisingEvents = true
             };
 
-            process.OutputDataReceived += (_, e) => HandleLogOutput(item, e.Data, "stdout", "Info");
-            process.ErrorDataReceived += (_, e) =>
-            {
-                if (!string.IsNullOrWhiteSpace(e.Data))
-                {
-                    HandleLogOutput(item, e.Data, "stderr", "Error");
-                }
-            };
-
             process.Start();
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
+            _ = ReadProcessOutputAsync(item, process.StandardOutput.BaseStream, "stdout", "Info");
+            _ = ReadProcessOutputAsync(item, process.StandardError.BaseStream, "stderr", "Error");
 
             item.CurrentProcess = process;
             _logger.LogInformation("已启动 {ProcessName}，PID: {Pid}", item.Name, process.Id);
@@ -589,6 +582,63 @@ public class ProcessManager
         }
     }
 
+    private async Task ReadProcessOutputAsync(ProcessItem item, Stream stream, string streamName, string level)
+    {
+        var buffer = new byte[4096];
+        var line = new List<byte>(1024);
+
+        try
+        {
+            while (true)
+            {
+                var read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length));
+                if (read == 0)
+                {
+                    break;
+                }
+
+                for (var index = 0; index < read; index++)
+                {
+                    var value = buffer[index];
+                    if (value == (byte)'\n')
+                    {
+                        EmitLogLine(item, line, streamName, level);
+                        line.Clear();
+                        continue;
+                    }
+
+                    line.Add(value);
+                }
+            }
+
+            EmitLogLine(item, line, streamName, level);
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException)
+        {
+            _logger.LogDebug(ex, "读取 {ProcessName} 的 {StreamName} 日志流时结束。", item.Name, streamName);
+        }
+    }
+
+    private void EmitLogLine(ProcessItem item, List<byte> line, string streamName, string level)
+    {
+        if (line.Count == 0)
+        {
+            return;
+        }
+
+        if (line[^1] == (byte)'\r')
+        {
+            line.RemoveAt(line.Count - 1);
+        }
+
+        if (line.Count == 0)
+        {
+            return;
+        }
+
+        HandleLogOutput(item, DecodeProcessOutput(line.ToArray()), streamName, level);
+    }
+
     private void HandleLogOutput(ProcessItem item, string? log, string stream, string level)
     {
         if (string.IsNullOrWhiteSpace(log))
@@ -619,6 +669,130 @@ public class ProcessManager
         }
 
         _ = _hubContext.Clients.Group($"log_{item.Id}").SendAsync("ReceiveLog", item.Id, timeLog);
+    }
+
+    private string DecodeProcessOutput(byte[] bytes)
+    {
+        var mode = (_configuration["ProcessOutput:Encoding"] ?? "Auto").Trim();
+        if (mode.Equals("GBK", StringComparison.OrdinalIgnoreCase) ||
+            mode.Equals("GB2312", StringComparison.OrdinalIgnoreCase) ||
+            mode.Equals("936", StringComparison.OrdinalIgnoreCase))
+        {
+            return GetGbkEncoding().GetString(bytes);
+        }
+
+        if (mode.Equals("UTF-8", StringComparison.OrdinalIgnoreCase) ||
+            mode.Equals("UTF8", StringComparison.OrdinalIgnoreCase) ||
+            mode.Equals("65001", StringComparison.OrdinalIgnoreCase))
+        {
+            return Encoding.UTF8.GetString(bytes);
+        }
+
+        return DecodeProcessOutputAuto(bytes);
+    }
+
+    private static string DecodeProcessOutputAuto(byte[] bytes)
+    {
+        var candidates = new List<string>();
+        if (TryDecodeUtf8Strict(bytes, out var utf8Text))
+        {
+            candidates.Add(utf8Text);
+            if (TryRepairUtf8DecodedAsGbk(utf8Text, out var repaired))
+            {
+                candidates.Add(repaired);
+            }
+        }
+
+        try
+        {
+            var gbkText = GetGbkEncoding().GetString(bytes);
+            candidates.Add(gbkText);
+        }
+        catch (DecoderFallbackException)
+        {
+            // Ignore invalid GBK candidate.
+        }
+
+        if (candidates.Count == 0)
+        {
+            return Encoding.UTF8.GetString(bytes);
+        }
+
+        return candidates
+            .OrderBy(GetMojibakeScore)
+            .ThenByDescending(text => text.Count(IsCjkUnifiedIdeograph))
+            .First();
+    }
+
+    private static bool TryDecodeUtf8Strict(byte[] bytes, out string text)
+    {
+        try
+        {
+            text = new UTF8Encoding(false, true).GetString(bytes);
+            return true;
+        }
+        catch (DecoderFallbackException)
+        {
+            text = string.Empty;
+            return false;
+        }
+    }
+
+    private static bool TryRepairUtf8DecodedAsGbk(string text, out string repaired)
+    {
+        try
+        {
+            var bytes = GetGbkEncoding().GetBytes(text);
+            return TryDecodeUtf8Strict(bytes, out repaired);
+        }
+        catch (EncoderFallbackException)
+        {
+            repaired = string.Empty;
+            return false;
+        }
+    }
+
+    private static Encoding GetGbkEncoding()
+    {
+        return Encoding.GetEncoding(936, EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback);
+    }
+
+    private static int GetMojibakeScore(string text)
+    {
+        const string suspiciousChars = "宸插惎惧姝ゅ崟鎺愭枃浠堕噺鍙傛暟鏈嶅姟娴嬭瘯缂栫爜涓嶅彲";
+
+        var score = 0;
+        foreach (var ch in text)
+        {
+            if (ch == '\uFFFD')
+            {
+                score += 30;
+            }
+            else if (char.IsControl(ch) && ch is not '\t')
+            {
+                score += 20;
+            }
+            else if (suspiciousChars.Contains(ch))
+            {
+                score += 6;
+            }
+            else if (ch is 'Ã' or 'Â' or '¤' or '€')
+            {
+                score += 6;
+            }
+        }
+
+        if (text.Contains("$\\", StringComparison.Ordinal) || text.Contains("\\x", StringComparison.OrdinalIgnoreCase))
+        {
+            score += 20;
+        }
+
+        return score;
+    }
+
+    private static bool IsCjkUnifiedIdeograph(char ch)
+    {
+        return ch >= '\u4E00' && ch <= '\u9FFF';
     }
 
     private static IEnumerable<string> SplitCommandLineArguments(string arguments)
