@@ -10,14 +10,16 @@ public class ProcessManager
     private readonly IHubContext<MonitorHub> _hubContext;
     private readonly ILogger<ProcessManager> _logger;
     private readonly ProcessConfigStore _configStore;
+    private readonly ProcessPathService _pathService;
     private readonly SemaphoreSlim _stateLock = new(1, 1);
     private readonly int _processorCount = Environment.ProcessorCount;
     private readonly List<ProcessItem> _processes;
 
-    public ProcessManager(IHubContext<MonitorHub> hubContext, ProcessConfigStore configStore, ILogger<ProcessManager> logger)
+    public ProcessManager(IHubContext<MonitorHub> hubContext, ProcessConfigStore configStore, ProcessPathService pathService, ILogger<ProcessManager> logger)
     {
         _hubContext = hubContext;
         _configStore = configStore;
+        _pathService = pathService;
         _logger = logger;
         _processes = _configStore.Load().Select(CreateProcessItem).ToList();
     }
@@ -181,6 +183,7 @@ public class ProcessManager
         try
         {
             ValidateConfig(normalized);
+            _pathService.EnsureTargetDirectoryReady(normalized.DllPath);
 
             var nextConfigs = _processes.Select(p => p.ToConfigDto()).ToList();
             nextConfigs.Add(normalized);
@@ -209,6 +212,13 @@ public class ProcessManager
         {
             var item = FindProcess(normalized.Id) ?? throw new KeyNotFoundException("未找到对应的进程配置。");
             ValidateConfig(normalized, item.Id);
+            var targetDirectoryChanged = !_pathService.IsSameTargetDirectory(item.DllPath, normalized.DllPath);
+            if (targetDirectoryChanged && item.IsRunning)
+            {
+                throw new ArgumentException("进程运行中不能修改部署目录，请先停止进程。");
+            }
+
+            _pathService.EnsureTargetDirectoryReady(normalized.DllPath);
 
             var nextConfigs = _processes.Select(p => p.ToConfigDto()).ToList();
             var index = nextConfigs.FindIndex(p => string.Equals(p.Id, item.Id, StringComparison.OrdinalIgnoreCase));
@@ -248,9 +258,9 @@ public class ProcessManager
                 .Where(p => !string.Equals(p.Id, id, StringComparison.OrdinalIgnoreCase))
                 .Select(p => p.ToConfigDto())
                 .ToList();
-            _configStore.Save(nextConfigs);
-
             StopProcessCore(item, manualStop: true);
+            _pathService.DeleteTargetDirectory(item.DllPath);
+            _configStore.Save(nextConfigs);
             _processes.Remove(item);
             deleted = true;
         }
@@ -418,9 +428,6 @@ public class ProcessManager
             var startInfo = new ProcessStartInfo
             {
                 FileName = "dotnet",
-                Arguments = string.IsNullOrWhiteSpace(item.Arguments)
-                    ? item.DllPath
-                    : $"{item.DllPath} {item.Arguments}",
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -428,6 +435,12 @@ public class ProcessManager
                 StandardOutputEncoding = System.Text.Encoding.UTF8,
                 StandardErrorEncoding = System.Text.Encoding.UTF8
             };
+
+            startInfo.ArgumentList.Add(_pathService.ResolveDllPath(item.DllPath));
+            foreach (var argument in SplitCommandLineArguments(item.Arguments))
+            {
+                startInfo.ArgumentList.Add(argument);
+            }
 
             var process = new Process
             {
@@ -585,6 +598,52 @@ public class ProcessManager
         }
 
         _ = _hubContext.Clients.Group($"log_{item.Id}").SendAsync("ReceiveLog", item.Id, timeLog);
+    }
+
+    private static IEnumerable<string> SplitCommandLineArguments(string arguments)
+    {
+        if (string.IsNullOrWhiteSpace(arguments))
+        {
+            yield break;
+        }
+
+        var current = new System.Text.StringBuilder();
+        var quoteChar = '\0';
+
+        for (var index = 0; index < arguments.Length; index++)
+        {
+            var ch = arguments[index];
+
+            if ((ch == '"' || ch == '\'') && quoteChar == '\0')
+            {
+                quoteChar = ch;
+                continue;
+            }
+
+            if (ch == quoteChar)
+            {
+                quoteChar = '\0';
+                continue;
+            }
+
+            if (char.IsWhiteSpace(ch) && quoteChar == '\0')
+            {
+                if (current.Length > 0)
+                {
+                    yield return current.ToString();
+                    current.Clear();
+                }
+
+                continue;
+            }
+
+            current.Append(ch);
+        }
+
+        if (current.Length > 0)
+        {
+            yield return current.ToString();
+        }
     }
 
     private Task SendEmergencyAlertAsync(string processName, string reason)

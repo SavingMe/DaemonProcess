@@ -15,9 +15,11 @@ public sealed class ProcessUpdateService
     private readonly ProcessManager _processManager;
     private readonly IWebHostEnvironment _environment;
     private readonly IConfiguration _configuration;
+    private readonly ProcessPathService _pathService;
+    private readonly SevenZipService _sevenZipService;
     private readonly ILogger<ProcessUpdateService> _logger;
     private readonly SemaphoreSlim _updateLock = new(1, 1);
-    private readonly SemaphoreSlim _historyLock = new(1, 1);
+    private readonly SemaphoreSlim _snapshotLock = new(1, 1);
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -28,20 +30,27 @@ public sealed class ProcessUpdateService
         ProcessManager processManager,
         IWebHostEnvironment environment,
         IConfiguration configuration,
+        ProcessPathService pathService,
+        SevenZipService sevenZipService,
         ILogger<ProcessUpdateService> logger)
     {
         _processManager = processManager;
         _environment = environment;
         _configuration = configuration;
+        _pathService = pathService;
+        _sevenZipService = sevenZipService;
         _logger = logger;
     }
 
-    public async Task<IReadOnlyList<ProcessUpdateHistoryDto>> GetHistoryAsync(string processId)
+    public async Task<IReadOnlyList<ProcessSnapshotDto>> GetSnapshotsAsync(string processId)
     {
-        var history = await LoadHistoryAsync();
-        return history
+        var snapshots = await LoadSnapshotsAsync();
+        var currentSnapshotId = await GetCurrentSnapshotIdAsync(processId);
+
+        return snapshots
             .Where(item => string.Equals(item.ProcessId, processId, StringComparison.OrdinalIgnoreCase))
-            .OrderByDescending(item => item.StartedAt)
+            .OrderByDescending(item => item.CreatedAt)
+            .Select(item => WithCurrentFlag(item, currentSnapshotId))
             .ToList();
     }
 
@@ -67,27 +76,27 @@ public sealed class ProcessUpdateService
             var status = (await _processManager.GetStatusSnapshotsAsync())
                 .FirstOrDefault(item => string.Equals(item.Id, processId, StringComparison.OrdinalIgnoreCase));
 
-            var targetDirectory = ResolveTargetDirectory(config.DllPath);
-            var startedAt = DateTimeOffset.Now;
-            var backupDirectory = GetBackupDirectory(processId, startedAt);
-            var history = new ProcessUpdateHistoryDto
+            var targetDirectory = _pathService.ResolveTargetDirectory(config.DllPath);
+            var snapshotId = Guid.NewGuid().ToString("N");
+            var createdAt = DateTimeOffset.Now;
+            var snapshotDirectory = GetSnapshotDirectory(processId, createdAt, snapshotId);
+            var uploadPath = string.Empty;
+            var targetMayBeChanged = false;
+
+            var snapshot = new ProcessSnapshotDto
             {
-                UpdateId = Guid.NewGuid().ToString("N"),
+                SnapshotId = snapshotId,
                 ProcessId = config.Id,
                 ProcessName = config.Name,
                 TargetDirectory = targetDirectory,
+                SnapshotDirectory = snapshotDirectory,
                 OriginalFileName = Path.GetFileName(file.FileName),
                 FileSizeBytes = file.Length,
-                BackupDirectory = backupDirectory,
-                StartedAt = startedAt,
+                CreatedAt = createdAt,
                 Status = "Running",
                 ProcessWasRunning = status?.IsRunning == true
             };
 
-            await AppendOrUpdateHistoryAsync(history);
-
-            var uploadPath = string.Empty;
-            var targetMayBeChanged = false;
             try
             {
                 if (!Directory.Exists(targetDirectory))
@@ -95,56 +104,117 @@ public sealed class ProcessUpdateService
                     throw new DirectoryNotFoundException($"目标目录不存在：{targetDirectory}");
                 }
 
-                uploadPath = await SaveUploadAsync(file, history.UpdateId, cancellationToken);
+                uploadPath = await SaveUploadAsync(file, snapshotId, cancellationToken);
 
-                if (history.ProcessWasRunning)
+                if (snapshot.ProcessWasRunning)
                 {
                     await _processManager.StopProcessAsync(processId);
                 }
 
-                CopyDirectory(targetDirectory, backupDirectory);
+                _pathService.CopyDirectoryFast(targetDirectory, snapshotDirectory);
+                snapshot.Status = "Succeeded";
+                await AppendSnapshotAsync(snapshot);
+
                 targetMayBeChanged = true;
                 await ExtractArchiveAsync(uploadPath, targetDirectory, password, cancellationToken);
 
-                history.RestartSucceeded = await _processManager.StartProcessAsync(processId);
-                history.Status = history.RestartSucceeded ? "Succeeded" : "RestartFailed";
-                history.ErrorMessage = history.RestartSucceeded ? null : "更新包已解压，但进程重启失败。";
+                if (snapshot.ProcessWasRunning)
+                {
+                    snapshot.RestartSucceeded = await _processManager.StartProcessAsync(processId);
+                    if (!snapshot.RestartSucceeded)
+                    {
+                        snapshot.Status = "RestartFailed";
+                        snapshot.ErrorMessage = "更新前快照已生成，更新包已解压，但进程重启失败。";
+                        return new ProcessUpdateResultDto
+                        {
+                            Message = snapshot.ErrorMessage,
+                            Snapshot = snapshot
+                        };
+                    }
+                }
+
+                await ClearCurrentSnapshotIdAsync(processId);
+
+                return new ProcessUpdateResultDto
+                {
+                    Message = "更新完成，已备份更新前目录。",
+                    Snapshot = snapshot
+                };
             }
             catch (Exception ex)
             {
-                history.Status = history.Status == "Running" ? "Failed" : history.Status;
-                history.ErrorMessage = ex.Message;
-                if (history.ProcessWasRunning && !targetMayBeChanged)
+                snapshot.Status = "Failed";
+                snapshot.ErrorMessage = ex.Message;
+                if (snapshot.ProcessWasRunning && !targetMayBeChanged)
                 {
-                    history.RestartSucceeded = await _processManager.StartProcessAsync(processId);
-                    if (!history.RestartSucceeded)
+                    snapshot.RestartSucceeded = await _processManager.StartProcessAsync(processId);
+                    if (!snapshot.RestartSucceeded)
                     {
-                        history.ErrorMessage += " 原进程恢复启动失败。";
+                        snapshot.ErrorMessage += " 原进程恢复启动失败。";
                     }
                 }
 
                 _logger.LogError(ex, "更新 {ProcessName} 失败。", config.Name);
+                return new ProcessUpdateResultDto
+                {
+                    Message = snapshot.ErrorMessage ?? "更新失败。",
+                    Snapshot = snapshot
+                };
             }
             finally
             {
-                history.FinishedAt = DateTimeOffset.Now;
-                await AppendOrUpdateHistoryAsync(history);
                 DeleteQuietly(uploadPath);
             }
+        }
+        finally
+        {
+            _updateLock.Release();
+        }
+    }
 
-            if (history.Status is "Failed" or "RestartFailed")
+    public async Task<ProcessUpdateResultDto> CreateManualSnapshotAsync(string processId, CancellationToken cancellationToken)
+    {
+        await _updateLock.WaitAsync(cancellationToken);
+        try
+        {
+            var config = await _processManager.GetProcessConfigAsync(processId)
+                ?? throw new KeyNotFoundException("未找到对应的进程配置。");
+
+            var status = (await _processManager.GetStatusSnapshotsAsync())
+                .FirstOrDefault(item => string.Equals(item.Id, processId, StringComparison.OrdinalIgnoreCase));
+
+            var targetDirectory = _pathService.ResolveTargetDirectory(config.DllPath);
+            if (!Directory.Exists(targetDirectory))
             {
-                return new ProcessUpdateResultDto
-                {
-                    Message = history.ErrorMessage ?? "更新失败。",
-                    History = history
-                };
+                throw new DirectoryNotFoundException($"目标目录不存在：{targetDirectory}");
             }
+
+            var snapshotId = Guid.NewGuid().ToString("N");
+            var createdAt = DateTimeOffset.Now;
+            var snapshotDirectory = GetSnapshotDirectory(processId, createdAt, snapshotId);
+            var snapshot = new ProcessSnapshotDto
+            {
+                SnapshotId = snapshotId,
+                ProcessId = config.Id,
+                ProcessName = config.Name,
+                TargetDirectory = targetDirectory,
+                SnapshotDirectory = snapshotDirectory,
+                OriginalFileName = "manual-backup",
+                FileSizeBytes = 0,
+                CreatedAt = createdAt,
+                Status = "Succeeded",
+                ProcessWasRunning = status?.IsRunning == true,
+                RestartSucceeded = false,
+                IsCurrent = false
+            };
+
+            _pathService.CopyDirectoryFast(targetDirectory, snapshotDirectory);
+            await AppendSnapshotAsync(snapshot);
 
             return new ProcessUpdateResultDto
             {
-                Message = "更新完成，进程已重启。",
-                History = history
+                Message = "手动备份已生成，不影响当前运行版本。",
+                Snapshot = snapshot
             };
         }
         finally
@@ -153,18 +223,122 @@ public sealed class ProcessUpdateService
         }
     }
 
-    private string ResolveTargetDirectory(string dllPath)
+    public async Task<ProcessRestoreResultDto> RestoreAsync(string processId, string snapshotId, CancellationToken cancellationToken)
     {
-        var normalizedPath = dllPath.Trim();
-        if (!Path.IsPathRooted(normalizedPath))
+        await _updateLock.WaitAsync(cancellationToken);
+        try
         {
-            normalizedPath = Path.Combine(_environment.ContentRootPath, normalizedPath);
-        }
+            var config = await _processManager.GetProcessConfigAsync(processId)
+                ?? throw new KeyNotFoundException("未找到对应的进程配置。");
 
-        return Path.GetDirectoryName(Path.GetFullPath(normalizedPath)) ?? _environment.ContentRootPath;
+            var snapshots = await LoadSnapshotsAsync();
+            var snapshot = snapshots.FirstOrDefault(item =>
+                string.Equals(item.ProcessId, processId, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(item.SnapshotId, snapshotId, StringComparison.OrdinalIgnoreCase))
+                ?? throw new KeyNotFoundException("未找到对应的快照。");
+
+            if (!string.Equals(snapshot.Status, "Succeeded", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("只能恢复成功生成的快照。");
+            }
+
+            if (!Directory.Exists(snapshot.SnapshotDirectory))
+            {
+                throw new DirectoryNotFoundException($"快照目录不存在：{snapshot.SnapshotDirectory}");
+            }
+
+            var targetDirectory = _pathService.ResolveTargetDirectory(config.DllPath);
+            var status = (await _processManager.GetStatusSnapshotsAsync())
+                .FirstOrDefault(item => string.Equals(item.Id, processId, StringComparison.OrdinalIgnoreCase));
+            var wasRunning = status?.IsRunning == true;
+            var targetMayBeChanged = false;
+
+            try
+            {
+                if (wasRunning)
+                {
+                    await _processManager.StopProcessAsync(processId);
+                }
+
+                Directory.CreateDirectory(targetDirectory);
+                ProcessPathService.ClearDirectory(targetDirectory);
+                targetMayBeChanged = true;
+                _pathService.CopyDirectoryFast(snapshot.SnapshotDirectory, targetDirectory);
+
+                var restartSucceeded = await _processManager.StartProcessAsync(processId);
+                if (!restartSucceeded)
+                {
+                    var failedSnapshot = WithCurrentFlag(snapshot, await GetCurrentSnapshotIdAsync(processId));
+                    failedSnapshot.RestartSucceeded = false;
+                    failedSnapshot.ErrorMessage = "快照已恢复，但进程重启失败。";
+                    return new ProcessRestoreResultDto
+                    {
+                        Message = failedSnapshot.ErrorMessage,
+                        Snapshot = failedSnapshot
+                    };
+                }
+
+                await SetCurrentSnapshotIdAsync(processId, snapshotId);
+                var currentSnapshot = WithCurrentFlag(snapshot, snapshotId);
+                currentSnapshot.RestartSucceeded = true;
+
+                return new ProcessRestoreResultDto
+                {
+                    Message = "已恢复到选中的快照，并标记为当前运行版本。",
+                    Snapshot = currentSnapshot
+                };
+            }
+            catch (Exception ex)
+            {
+                if (wasRunning && !targetMayBeChanged)
+                {
+                    await _processManager.StartProcessAsync(processId);
+                }
+
+                _logger.LogError(ex, "恢复 {ProcessName} 快照 {SnapshotId} 失败。", config.Name, snapshotId);
+                var failedSnapshot = WithCurrentFlag(snapshot, await GetCurrentSnapshotIdAsync(processId));
+                failedSnapshot.ErrorMessage = ex.Message;
+                return new ProcessRestoreResultDto
+                {
+                    Message = ex.Message,
+                    Snapshot = failedSnapshot
+                };
+            }
+        }
+        finally
+        {
+            _updateLock.Release();
+        }
     }
 
-    private string GetBackupDirectory(string processId, DateTimeOffset timestamp)
+    public async Task DeleteSnapshotAsync(string processId, string snapshotId, CancellationToken cancellationToken)
+    {
+        await _updateLock.WaitAsync(cancellationToken);
+        try
+        {
+            var currentSnapshotId = await GetCurrentSnapshotIdAsync(processId);
+            if (string.Equals(currentSnapshotId, snapshotId, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("当前运行快照不能删除。");
+            }
+
+            var snapshots = await LoadSnapshotsAsync();
+            var snapshot = snapshots.FirstOrDefault(item =>
+                string.Equals(item.ProcessId, processId, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(item.SnapshotId, snapshotId, StringComparison.OrdinalIgnoreCase))
+                ?? throw new KeyNotFoundException("未找到对应的快照。");
+
+            _pathService.DeleteSnapshotDirectory(snapshot.SnapshotDirectory);
+            snapshots.RemoveAll(item => string.Equals(item.SnapshotId, snapshotId, StringComparison.OrdinalIgnoreCase));
+            await SaveSnapshotsAsync(snapshots);
+        }
+        finally
+        {
+            _updateLock.Release();
+        }
+    }
+
+    private string GetSnapshotDirectory(string processId, DateTimeOffset timestamp, string snapshotId)
     {
         var backupRoot = _configuration["UpdatePackage:BackupRoot"];
         if (string.IsNullOrWhiteSpace(backupRoot))
@@ -176,30 +350,46 @@ public sealed class ProcessUpdateService
             backupRoot = Path.Combine(_environment.ContentRootPath, backupRoot);
         }
 
-        return Path.Combine(backupRoot, SanitizePathSegment(processId), timestamp.ToString("yyyyMMdd-HHmmss"));
+        var folderName = $"{timestamp:yyyyMMdd-HHmmss}-{snapshotId[..8]}";
+        return Path.Combine(backupRoot, SanitizePathSegment(processId), folderName);
     }
 
-    private string GetHistoryFilePath()
+    private string GetSnapshotsFilePath()
     {
-        var historyFile = _configuration["UpdatePackage:HistoryFile"];
-        if (string.IsNullOrWhiteSpace(historyFile))
+        var snapshotsFile = _configuration["UpdatePackage:SnapshotsFile"];
+        if (string.IsNullOrWhiteSpace(snapshotsFile))
         {
-            historyFile = Path.Combine(_environment.ContentRootPath, "update-history.json");
+            snapshotsFile = Path.Combine(_environment.ContentRootPath, "update-snapshots.json");
         }
-        else if (!Path.IsPathRooted(historyFile))
+        else if (!Path.IsPathRooted(snapshotsFile))
         {
-            historyFile = Path.Combine(_environment.ContentRootPath, historyFile);
+            snapshotsFile = Path.Combine(_environment.ContentRootPath, snapshotsFile);
         }
 
-        return historyFile;
+        return snapshotsFile;
     }
 
-    private async Task<string> SaveUploadAsync(IFormFile file, string updateId, CancellationToken cancellationToken)
+    private string GetCurrentFilePath()
+    {
+        var currentFile = _configuration["UpdatePackage:CurrentFile"];
+        if (string.IsNullOrWhiteSpace(currentFile))
+        {
+            currentFile = Path.Combine(_environment.ContentRootPath, "update-current.json");
+        }
+        else if (!Path.IsPathRooted(currentFile))
+        {
+            currentFile = Path.Combine(_environment.ContentRootPath, currentFile);
+        }
+
+        return currentFile;
+    }
+
+    private async Task<string> SaveUploadAsync(IFormFile file, string snapshotId, CancellationToken cancellationToken)
     {
         var uploadRoot = Path.Combine(_environment.ContentRootPath, "update-uploads");
         Directory.CreateDirectory(uploadRoot);
 
-        var uploadPath = Path.Combine(uploadRoot, $"{updateId}{Path.GetExtension(file.FileName)}");
+        var uploadPath = Path.Combine(uploadRoot, $"{snapshotId}{Path.GetExtension(file.FileName)}");
         await using var stream = File.Create(uploadPath);
         await file.CopyToAsync(stream, cancellationToken);
         return uploadPath;
@@ -209,11 +399,7 @@ public sealed class ProcessUpdateService
     {
         Directory.CreateDirectory(targetDirectory);
 
-        var sevenZipPath = _configuration["UpdatePackage:SevenZipPath"];
-        if (string.IsNullOrWhiteSpace(sevenZipPath))
-        {
-            sevenZipPath = "7z";
-        }
+        var sevenZipPath = await _sevenZipService.GetExecutablePathAsync(cancellationToken);
 
         var processStartInfo = new ProcessStartInfo
         {
@@ -258,83 +444,137 @@ public sealed class ProcessUpdateService
         }
     }
 
-    private static void CopyDirectory(string sourceDirectory, string targetDirectory)
+    private async Task<List<ProcessSnapshotDto>> LoadSnapshotsAsync()
     {
-        Directory.CreateDirectory(targetDirectory);
-
-        foreach (var directory in Directory.EnumerateDirectories(sourceDirectory, "*", SearchOption.AllDirectories))
-        {
-            var relativePath = Path.GetRelativePath(sourceDirectory, directory);
-            Directory.CreateDirectory(Path.Combine(targetDirectory, relativePath));
-        }
-
-        foreach (var file in Directory.EnumerateFiles(sourceDirectory, "*", SearchOption.AllDirectories))
-        {
-            var relativePath = Path.GetRelativePath(sourceDirectory, file);
-            var targetFile = Path.Combine(targetDirectory, relativePath);
-            Directory.CreateDirectory(Path.GetDirectoryName(targetFile)!);
-            File.Copy(file, targetFile, overwrite: true);
-        }
-    }
-
-    private async Task<List<ProcessUpdateHistoryDto>> LoadHistoryAsync()
-    {
-        await _historyLock.WaitAsync();
+        await _snapshotLock.WaitAsync();
         try
         {
-            var historyFile = GetHistoryFilePath();
-            if (!File.Exists(historyFile))
+            var snapshotsFile = GetSnapshotsFilePath();
+            if (!File.Exists(snapshotsFile))
             {
-                return new List<ProcessUpdateHistoryDto>();
+                return new List<ProcessSnapshotDto>();
             }
 
-            var json = await File.ReadAllTextAsync(historyFile);
-            return JsonSerializer.Deserialize<List<ProcessUpdateHistoryDto>>(json, _jsonOptions)
-                ?? new List<ProcessUpdateHistoryDto>();
+            var json = await File.ReadAllTextAsync(snapshotsFile);
+            return JsonSerializer.Deserialize<List<ProcessSnapshotDto>>(json, _jsonOptions)
+                ?? new List<ProcessSnapshotDto>();
         }
         finally
         {
-            _historyLock.Release();
+            _snapshotLock.Release();
         }
     }
 
-    private async Task AppendOrUpdateHistoryAsync(ProcessUpdateHistoryDto item)
+    private async Task AppendSnapshotAsync(ProcessSnapshotDto item)
     {
-        await _historyLock.WaitAsync();
+        var snapshots = await LoadSnapshotsAsync();
+        snapshots.Add(item);
+        await SaveSnapshotsAsync(snapshots);
+    }
+
+    private async Task SaveSnapshotsAsync(List<ProcessSnapshotDto> snapshots)
+    {
+        await _snapshotLock.WaitAsync();
         try
         {
-            var historyFile = GetHistoryFilePath();
-            var historyDirectory = Path.GetDirectoryName(historyFile);
-            if (!string.IsNullOrWhiteSpace(historyDirectory))
+            var snapshotsFile = GetSnapshotsFilePath();
+            var snapshotsDirectory = Path.GetDirectoryName(snapshotsFile);
+            if (!string.IsNullOrWhiteSpace(snapshotsDirectory))
             {
-                Directory.CreateDirectory(historyDirectory);
+                Directory.CreateDirectory(snapshotsDirectory);
             }
 
-            var history = new List<ProcessUpdateHistoryDto>();
-            if (File.Exists(historyFile))
-            {
-                var json = await File.ReadAllTextAsync(historyFile);
-                history = JsonSerializer.Deserialize<List<ProcessUpdateHistoryDto>>(json, _jsonOptions)
-                    ?? new List<ProcessUpdateHistoryDto>();
-            }
-
-            var index = history.FindIndex(entry => entry.UpdateId == item.UpdateId);
-            if (index >= 0)
-            {
-                history[index] = item;
-            }
-            else
-            {
-                history.Add(item);
-            }
-
-            var nextJson = JsonSerializer.Serialize(history, _jsonOptions);
-            await File.WriteAllTextAsync(historyFile, nextJson);
+            var nextJson = JsonSerializer.Serialize(snapshots, _jsonOptions);
+            await File.WriteAllTextAsync(snapshotsFile, nextJson);
         }
         finally
         {
-            _historyLock.Release();
+            _snapshotLock.Release();
         }
+    }
+
+    private async Task<string?> GetCurrentSnapshotIdAsync(string processId)
+    {
+        var current = await LoadCurrentSnapshotsAsync();
+        return current.TryGetValue(processId, out var snapshotId) ? snapshotId : null;
+    }
+
+    private async Task SetCurrentSnapshotIdAsync(string processId, string snapshotId)
+    {
+        var current = await LoadCurrentSnapshotsAsync();
+        current[processId] = snapshotId;
+        await SaveCurrentSnapshotsAsync(current);
+    }
+
+    private async Task ClearCurrentSnapshotIdAsync(string processId)
+    {
+        var current = await LoadCurrentSnapshotsAsync();
+        if (current.Remove(processId))
+        {
+            await SaveCurrentSnapshotsAsync(current);
+        }
+    }
+
+    private async Task<Dictionary<string, string>> LoadCurrentSnapshotsAsync()
+    {
+        await _snapshotLock.WaitAsync();
+        try
+        {
+            var currentFile = GetCurrentFilePath();
+            if (!File.Exists(currentFile))
+            {
+                return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            var json = await File.ReadAllTextAsync(currentFile);
+            return JsonSerializer.Deserialize<Dictionary<string, string>>(json, _jsonOptions)
+                ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            _snapshotLock.Release();
+        }
+    }
+
+    private async Task SaveCurrentSnapshotsAsync(Dictionary<string, string> current)
+    {
+        await _snapshotLock.WaitAsync();
+        try
+        {
+            var currentFile = GetCurrentFilePath();
+            var currentDirectory = Path.GetDirectoryName(currentFile);
+            if (!string.IsNullOrWhiteSpace(currentDirectory))
+            {
+                Directory.CreateDirectory(currentDirectory);
+            }
+
+            var json = JsonSerializer.Serialize(current, _jsonOptions);
+            await File.WriteAllTextAsync(currentFile, json);
+        }
+        finally
+        {
+            _snapshotLock.Release();
+        }
+    }
+
+    private static ProcessSnapshotDto WithCurrentFlag(ProcessSnapshotDto item, string? currentSnapshotId)
+    {
+        return new ProcessSnapshotDto
+        {
+            SnapshotId = item.SnapshotId,
+            ProcessId = item.ProcessId,
+            ProcessName = item.ProcessName,
+            TargetDirectory = item.TargetDirectory,
+            SnapshotDirectory = item.SnapshotDirectory,
+            OriginalFileName = item.OriginalFileName,
+            FileSizeBytes = item.FileSizeBytes,
+            CreatedAt = item.CreatedAt,
+            Status = item.Status,
+            ErrorMessage = item.ErrorMessage,
+            ProcessWasRunning = item.ProcessWasRunning,
+            RestartSucceeded = item.RestartSucceeded,
+            IsCurrent = string.Equals(item.SnapshotId, currentSnapshotId, StringComparison.OrdinalIgnoreCase)
+        };
     }
 
     private static string SanitizePathSegment(string value)

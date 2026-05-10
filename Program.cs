@@ -7,7 +7,9 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<ProcessConfigStore>();
+builder.Services.AddSingleton<ProcessPathService>();
 builder.Services.AddSingleton<ProcessManager>();
+builder.Services.AddSingleton<SevenZipService>();
 builder.Services.AddSingleton<ProcessUpdateService>();
 builder.Services.AddHostedService<DaemonWorker>();
 
@@ -16,6 +18,57 @@ var app = builder.Build();
 app.UseDefaultFiles();
 app.UseStaticFiles();
 app.MapHub<MonitorHub>("/monitor");
+
+var toolsApi = app.MapGroup("/api/tools");
+
+toolsApi.MapGet("/7zip", async (SevenZipService sevenZipService, CancellationToken cancellationToken) =>
+{
+    var status = await sevenZipService.GetStatusAsync(cancellationToken);
+    return Results.Ok(status);
+});
+
+toolsApi.MapPost("/7zip/install", async (SevenZipService sevenZipService, CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var status = await sevenZipService.InstallAsync(cancellationToken);
+        return status.Installed
+            ? Results.Ok(status)
+            : Results.BadRequest(status);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new SevenZipStatusDto
+        {
+            Installed = false,
+            Message = ex.Message
+        });
+    }
+    catch (IOException ex)
+    {
+        return Results.BadRequest(new SevenZipStatusDto
+        {
+            Installed = false,
+            Message = ex.Message
+        });
+    }
+    catch (UnauthorizedAccessException ex)
+    {
+        return Results.BadRequest(new SevenZipStatusDto
+        {
+            Installed = false,
+            Message = ex.Message
+        });
+    }
+    catch (System.ComponentModel.Win32Exception ex)
+    {
+        return Results.BadRequest(new SevenZipStatusDto
+        {
+            Installed = false,
+            Message = ex.Message
+        });
+    }
+});
 
 var processApi = app.MapGroup("/api/processes");
 
@@ -37,6 +90,18 @@ processApi.MapPost("/", async (ProcessManager processManager, ProcessConfigDto r
         });
     }
     catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (IOException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (UnauthorizedAccessException ex)
     {
         return Results.BadRequest(new { message = ex.Message });
     }
@@ -67,20 +132,51 @@ processApi.MapPut("/{id}", async (string id, ProcessManager processManager, Proc
     {
         return Results.BadRequest(new { message = ex.Message });
     }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (IOException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (UnauthorizedAccessException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
 });
 
 processApi.MapDelete("/{id}", async (string id, ProcessManager processManager) =>
 {
-    var deleted = await processManager.DeleteProcessAsync(id);
-    return deleted
-        ? Results.Ok(new { message = "进程配置已删除。" })
-        : Results.NotFound(new { message = "未找到对应的进程配置。" });
+    try
+    {
+        var deleted = await processManager.DeleteProcessAsync(id);
+        return deleted
+            ? Results.Ok(new { message = "进程配置和部署目录已删除。" })
+            : Results.NotFound(new { message = "未找到对应的进程配置。" });
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (IOException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (UnauthorizedAccessException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
 });
 
 processApi.MapGet("/{id}/updates", async (string id, ProcessUpdateService updateService) =>
 {
-    var history = await updateService.GetHistoryAsync(id);
-    return Results.Ok(history);
+    var snapshots = await updateService.GetSnapshotsAsync(id);
+    return Results.Ok(snapshots);
 });
 
 processApi.MapPost("/{id}/updates", async (
@@ -100,7 +196,7 @@ processApi.MapPost("/{id}/updates", async (
 
         var password = form["password"].FirstOrDefault();
         var result = await updateService.UpdateAsync(id, file, password, cancellationToken);
-        return result.History.Status == "Succeeded"
+        return result.Snapshot.Status == "Succeeded"
             ? Results.Ok(result)
             : Results.BadRequest(result);
     }
@@ -109,6 +205,110 @@ processApi.MapPost("/{id}/updates", async (
         return Results.NotFound(new { message = ex.Message });
     }
     catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (IOException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (UnauthorizedAccessException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+});
+
+processApi.MapPost("/{id}/snapshots", async (
+    string id,
+    ProcessUpdateService updateService,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var result = await updateService.CreateManualSnapshotAsync(id, cancellationToken);
+        return Results.Ok(result);
+    }
+    catch (KeyNotFoundException ex)
+    {
+        return Results.NotFound(new { message = ex.Message });
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (DirectoryNotFoundException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (IOException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (UnauthorizedAccessException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+});
+
+processApi.MapPost("/{id}/updates/{snapshotId}/restore", async (
+    string id,
+    string snapshotId,
+    ProcessUpdateService updateService,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var result = await updateService.RestoreAsync(id, snapshotId, cancellationToken);
+        return result.Snapshot.IsCurrent
+            ? Results.Ok(result)
+            : Results.BadRequest(result);
+    }
+    catch (KeyNotFoundException ex)
+    {
+        return Results.NotFound(new { message = ex.Message });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (DirectoryNotFoundException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+});
+
+processApi.MapDelete("/{id}/updates/{snapshotId}", async (
+    string id,
+    string snapshotId,
+    ProcessUpdateService updateService,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        await updateService.DeleteSnapshotAsync(id, snapshotId, cancellationToken);
+        return Results.Ok(new { message = "历史快照和备份目录已删除。" });
+    }
+    catch (KeyNotFoundException ex)
+    {
+        return Results.NotFound(new { message = ex.Message });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (IOException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (UnauthorizedAccessException ex)
     {
         return Results.BadRequest(new { message = ex.Message });
     }

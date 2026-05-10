@@ -126,6 +126,29 @@
             flex-wrap: wrap;
         }
 
+        .selected-toolbar {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .selected-label {
+            color: var(--muted);
+            font-size: 13px;
+            font-weight: 700;
+            max-width: 260px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .selected-toolbar .action-button {
+            width: auto;
+            min-width: 72px;
+        }
+
         .table-wrap {
             padding: 0 18px 18px;
             overflow-x: auto;
@@ -133,7 +156,7 @@
 
         .monitor-table {
             width: 100%;
-            min-width: 960px;
+            min-width: 720px;
             table-layout: fixed;
             border-collapse: collapse;
         }
@@ -158,10 +181,6 @@
             width: 100px;
         }
 
-        .col-actions {
-            width: 420px;
-        }
-
         th,
         td {
             padding: 8px 10px;
@@ -180,6 +199,15 @@
 
         tbody tr:last-child td {
             border-bottom: none;
+        }
+
+        .monitor-table tbody tr {
+            cursor: pointer;
+        }
+
+        .monitor-table tbody tr.selected-row td {
+            background: rgba(37, 99, 235, 0.08);
+            box-shadow: inset 3px 0 0 var(--primary);
         }
 
         .metric,
@@ -265,14 +293,6 @@
             color: #4338ca;
         }
 
-        .button-row {
-            display: grid;
-            grid-template-columns: repeat(5, minmax(64px, 1fr));
-            gap: 6px;
-            align-items: stretch;
-            min-width: 0;
-        }
-
         .monitor-table tbody tr.drag-over td {
             background: rgba(37, 99, 235, 0.08);
             box-shadow: inset 0 1px 0 rgba(37, 99, 235, 0.16), inset 0 -1px 0 rgba(37, 99, 235, 0.16);
@@ -287,41 +307,52 @@
         }
 
         .history-list {
-            display: grid;
-            gap: 12px;
-            max-height: calc(100vh - 190px);
-            overflow-y: auto;
+            height: 100%;
+            overflow: auto;
         }
 
-        .history-item {
-            border: 1px solid var(--line);
-            border-radius: 16px;
-            padding: 14px;
-            background: rgba(248, 250, 252, 0.82);
+        .snapshot-table {
+            width: 100%;
+            min-width: 900px;
+            border-collapse: collapse;
         }
 
-        .history-item strong {
-            display: block;
-            margin-bottom: 6px;
-        }
-
-        .history-item dl {
-            display: grid;
-            grid-template-columns: 96px minmax(0, 1fr);
-            gap: 6px 10px;
-            margin: 0;
-            color: var(--muted);
+        .snapshot-table th,
+        .snapshot-table td {
+            padding: 10px 8px;
             font-size: 12px;
+            vertical-align: top;
         }
 
-        .history-item dt {
+        .snapshot-path {
+            max-width: 280px;
+            color: var(--muted);
+            font-family: "Cascadia Mono", "Consolas", monospace;
+            overflow-wrap: anywhere;
+        }
+
+        .current-snapshot {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 76px;
+            padding: 5px 9px;
+            border-radius: 999px;
+            background: var(--success-bg);
+            color: var(--success-text);
+            font-size: 11px;
             font-weight: 700;
         }
 
-        .history-item dd {
-            margin: 0;
-            min-width: 0;
-            overflow-wrap: anywhere;
+        .snapshot-actions {
+            display: inline-flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .snapshot-action {
+            min-width: 82px;
+            padding: 7px 10px;
         }
 
         button {
@@ -419,6 +450,36 @@
             background: linear-gradient(135deg, #2563eb, #1d4ed8);
         }
 
+        .tool-alert {
+            display: none;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+            margin: 0 0 18px;
+            padding: 14px 16px;
+            border: 1px solid rgba(245, 158, 11, 0.26);
+            border-radius: 16px;
+            background: rgba(255, 251, 235, 0.96);
+            color: #92400e;
+            box-shadow: 0 14px 32px rgba(15, 23, 42, 0.08);
+        }
+
+        .tool-alert strong {
+            display: block;
+            margin-bottom: 4px;
+            color: #78350f;
+            font-size: 14px;
+        }
+
+        .tool-alert span {
+            font-size: 13px;
+            line-height: 1.4;
+        }
+
+        .tool-alert button {
+            flex-shrink: 0;
+        }
+
         .overlay {
             display: none;
             position: fixed;
@@ -473,6 +534,34 @@
             width: min(640px, calc(100vw - 28px));
             max-height: calc(100vh - 32px);
             transform: translate(-50%, -50%);
+        }
+
+        .history-modal {
+            top: 16px;
+            left: 16px;
+            width: calc(100vw - 32px);
+            height: calc(100vh - 32px);
+            min-width: min(720px, calc(100vw - 28px));
+            min-height: min(460px, calc(100vh - 28px));
+            resize: both;
+            display: none;
+            flex-direction: column;
+        }
+
+        .history-modal .modal-header {
+            cursor: move;
+            user-select: none;
+        }
+
+        .history-modal .modal-header button {
+            cursor: pointer;
+        }
+
+        .history-modal-body {
+            flex: 1;
+            min-height: 0;
+            padding: 18px 20px 20px;
+            overflow: hidden;
         }
 
         .config-modal-body {
@@ -642,8 +731,10 @@
 
         @media (max-width: 960px) {
             .card-header,
-            .hero {
+            .hero,
+            .tool-alert {
                 flex-direction: column;
+                align-items: stretch;
             }
         }
 
@@ -680,12 +771,29 @@
             </div>
         </section>
 
+        <section class="tool-alert" id="sevenZipAlert">
+            <div>
+                <strong>未检测到 7-Zip</strong>
+                <span id="sevenZipMessage">更新 .zip / .rar 包需要 7-Zip。</span>
+            </div>
+            <button type="button" class="btn-primary" id="installSevenZipButton">一键安装 7z</button>
+        </section>
+
         <article class="card">
             <div class="card-header">
                 <div>
                     <h2>进程监控</h2>
                 </div>
                 <div class="header-actions">
+                    <div class="selected-toolbar" aria-live="polite">
+                        <span class="selected-label" id="selectedProcessLabel">请选择一个进程</span>
+                        <button type="button" class="action-button btn-secondary" id="toolbarTerminalButton" disabled>终端</button>
+                        <button type="button" class="action-button btn-success" id="toolbarToggleButton" disabled>启动</button>
+                        <button type="button" class="action-button btn-secondary" id="toolbarHistoryButton" disabled>历史</button>
+                        <button type="button" class="action-button btn-ghost" id="toolbarBackupButton" disabled>备份</button>
+                        <button type="button" class="action-button btn-ghost" id="toolbarEditButton" disabled>编辑</button>
+                        <button type="button" class="action-button btn-secondary" id="toolbarDeleteButton" disabled>删除</button>
+                    </div>
                     <button type="button" class="btn-primary" id="openConfigButton">新增进程</button>
                 </div>
             </div>
@@ -697,7 +805,6 @@
                         <col class="col-cpu">
                         <col class="col-memory">
                         <col class="col-status">
-                        <col class="col-actions">
                     </colgroup>
                     <thead>
                         <tr>
@@ -706,7 +813,6 @@
                             <th>CPU</th>
                             <th>内存</th>
                             <th>状态</th>
-                            <th>操作</th>
                         </tr>
                     </thead>
                     <tbody id="statusTableBody"></tbody>
@@ -736,13 +842,13 @@
                     </div>
                     <div class="field">
                         <label for="processName">名称</label>
-                        <input id="processName" name="name" placeholder="例如：频谱数据采集服务" required>
+                        <input id="processName" name="name" placeholder="" required>
                     </div>
                 </div>
 
                 <div class="field">
                     <label for="dllPath">DLL 路径</label>
-                    <input id="dllPath" name="dllPath" placeholder="例如：/home/ichinesebulbul/xxx.dll" required>
+                    <input id="dllPath" name="dllPath" placeholder="例如：test01/WebApplication1.dll" required>
                 </div>
 
                 <div class="field">
@@ -786,15 +892,15 @@
         </div>
     </section>
 
-    <section class="modal-card config-modal" id="historyModal">
+    <section class="modal-card history-modal" id="historyModal">
         <div class="modal-header">
             <div>
-                <h3 id="historyTitle">更新历史</h3>
-                <p id="historySubtitle">展示该进程每次更新和备份记录。</p>
+                <h3 id="historyTitle">历史备份</h3>
+                <p id="historySubtitle">展示该进程的版本快照和当前运行版本。</p>
             </div>
             <button class="modal-close" type="button" id="closeHistoryButton">关闭</button>
         </div>
-        <div class="config-modal-body">
+        <div class="history-modal-body">
             <div class="history-list" id="historyList"></div>
         </div>
     </section>
@@ -826,10 +932,12 @@
             configs: [],
             statuses: new Map(),
             rowRefs: new Map(),
+            selectedId: null,
             editingId: null,
             currentLogId: null,
             pendingUpdate: null,
-            activeModal: null
+            activeModal: null,
+            historyDrag: null
         };
 
         const elements = {
@@ -845,9 +953,19 @@
             saveButton: document.getElementById("saveButton"),
             resetButton: document.getElementById("resetButton"),
             openConfigButton: document.getElementById("openConfigButton"),
+            selectedProcessLabel: document.getElementById("selectedProcessLabel"),
+            toolbarTerminalButton: document.getElementById("toolbarTerminalButton"),
+            toolbarToggleButton: document.getElementById("toolbarToggleButton"),
+            toolbarHistoryButton: document.getElementById("toolbarHistoryButton"),
+            toolbarBackupButton: document.getElementById("toolbarBackupButton"),
+            toolbarEditButton: document.getElementById("toolbarEditButton"),
+            toolbarDeleteButton: document.getElementById("toolbarDeleteButton"),
             closeConfigButton: document.getElementById("closeConfigButton"),
             toast: document.getElementById("toast"),
             connectionState: document.getElementById("connectionState"),
+            sevenZipAlert: document.getElementById("sevenZipAlert"),
+            sevenZipMessage: document.getElementById("sevenZipMessage"),
+            installSevenZipButton: document.getElementById("installSevenZipButton"),
             overlay: document.getElementById("overlay"),
             configModal: document.getElementById("configModal"),
             terminalModal: document.getElementById("terminalModal"),
@@ -910,12 +1028,53 @@
         elements.configForm.addEventListener("submit", saveProcessConfig);
         elements.resetButton.addEventListener("click", resetForm);
         elements.openConfigButton.addEventListener("click", () => openConfigModal());
+        elements.toolbarTerminalButton.addEventListener("click", () => {
+            const config = getSelectedConfig();
+            if (config) {
+                openTerminal(config.id);
+            }
+        });
+        elements.toolbarToggleButton.addEventListener("click", () => {
+            const config = getSelectedConfig();
+            if (config) {
+                toggleProcess(config.id);
+            }
+        });
+        elements.toolbarHistoryButton.addEventListener("click", () => {
+            const config = getSelectedConfig();
+            if (config) {
+                openHistoryModal(config);
+            }
+        });
+        elements.toolbarBackupButton.addEventListener("click", () => {
+            const config = getSelectedConfig();
+            if (config) {
+                createManualSnapshot(config);
+            }
+        });
+        elements.toolbarEditButton.addEventListener("click", () => {
+            const config = getSelectedConfig();
+            if (config) {
+                openConfigModal(config);
+            }
+        });
+        elements.toolbarDeleteButton.addEventListener("click", () => {
+            const config = getSelectedConfig();
+            if (config) {
+                deleteProcess(config);
+            }
+        });
         elements.closeConfigButton.addEventListener("click", closeConfigModal);
         elements.closeTerminalButton.addEventListener("click", () => closeActiveModal());
         elements.updateForm.addEventListener("submit", uploadUpdatePackage);
         elements.closeUpdateButton.addEventListener("click", closeUpdateModal);
         elements.cancelUpdateButton.addEventListener("click", closeUpdateModal);
         elements.closeHistoryButton.addEventListener("click", closeHistoryModal);
+        elements.installSevenZipButton.addEventListener("click", installSevenZip);
+        elements.historyModal.querySelector(".modal-header").addEventListener("mousedown", startHistoryDrag);
+        document.addEventListener("mousemove", dragHistoryModal);
+        document.addEventListener("mouseup", stopHistoryDrag);
+        window.addEventListener("resize", keepHistoryModalInViewport);
         elements.overlay.addEventListener("click", () => closeActiveModal());
         document.addEventListener("keydown", event => {
             if (event.key === "Escape") {
@@ -927,7 +1086,7 @@
 
         async function initialize() {
             setConnectionState("连接中", "#f59e0b");
-            await Promise.all([startSignalR(), loadConfigs()]);
+            await Promise.all([startSignalR(), loadConfigs(), checkSevenZipStatus()]);
             rebuildStatusRows();
             updateAllStatusRows();
         }
@@ -951,6 +1110,9 @@
                 }
 
                 state.configs = await response.json();
+                if (state.selectedId && !state.configs.some(item => item.id === state.selectedId)) {
+                    state.selectedId = null;
+                }
                 rebuildStatusRows();
                 updateAllStatusRows();
                 refreshTerminalMeta();
@@ -960,18 +1122,74 @@
             }
         }
 
+        async function checkSevenZipStatus() {
+            try {
+                const response = await fetch("/api/tools/7zip");
+                const status = await response.json();
+                renderSevenZipStatus(status);
+            } catch (error) {
+                console.error(error);
+                elements.sevenZipAlert.style.display = "flex";
+                elements.sevenZipMessage.textContent = "检测 7-Zip 状态失败，请确认后端服务正常运行。";
+                elements.installSevenZipButton.style.display = "none";
+            }
+        }
+
+        function renderSevenZipStatus(status) {
+            if (status.installed) {
+                elements.sevenZipAlert.style.display = "none";
+                elements.installSevenZipButton.disabled = false;
+                elements.installSevenZipButton.textContent = "一键安装 7z";
+                return;
+            }
+
+            elements.sevenZipAlert.style.display = "flex";
+            elements.sevenZipMessage.textContent = status.message || "未检测到 7-Zip，更新 .zip / .rar 包前需要先安装。";
+            elements.installSevenZipButton.style.display = status.packageFound ? "" : "none";
+            elements.installSevenZipButton.disabled = false;
+            elements.installSevenZipButton.textContent = "一键安装 7z";
+        }
+
+        async function installSevenZip() {
+            elements.installSevenZipButton.disabled = true;
+            elements.installSevenZipButton.textContent = "安装中...";
+
+            try {
+                const response = await fetch("/api/tools/7zip/install", {
+                    method: "POST"
+                });
+                const status = await response.json();
+                renderSevenZipStatus(status);
+
+                if (!response.ok || !status.installed) {
+                    throw new Error(status.message || "7-Zip 安装失败。");
+                }
+
+                showToast(status.message || "7-Zip 已安装完成。", "success");
+            } catch (error) {
+                console.error(error);
+                showToast(error.message, "error");
+                elements.installSevenZipButton.disabled = false;
+                elements.installSevenZipButton.textContent = "一键安装 7z";
+            }
+        }
+
         function rebuildStatusRows() {
             elements.statusTableBody.replaceChildren();
             state.rowRefs.clear();
 
             if (state.configs.length === 0) {
-                elements.statusTableBody.appendChild(createEmptyRow("当前还没有配置任何进程。", 6));
+                state.selectedId = null;
+                elements.statusTableBody.appendChild(createEmptyRow("当前还没有配置任何进程。", 5));
+                updateToolbar();
                 return;
             }
 
             for (const config of state.configs) {
                 const row = document.createElement("tr");
                 row.id = `row-${config.id}`;
+                row.classList.toggle("selected-row", config.id === state.selectedId);
+                row.addEventListener("click", () => selectProcess(config.id));
                 wireUpdateDrop(row, config);
 
                 const nameCell = document.createElement("td");
@@ -1005,32 +1223,7 @@
                 statusBadge.textContent = "已停止";
                 statusCell.appendChild(statusBadge);
 
-                const actionCell = document.createElement("td");
-                const buttons = document.createElement("div");
-                buttons.className = "button-row";
-
-                const terminalButton = createActionButton("终端", "btn-secondary");
-                terminalButton.addEventListener("click", () => openTerminal(config.id));
-
-                const toggleButton = createActionButton("启动", "btn-success");
-
-                const historyButton = createActionButton("历史", "btn-secondary");
-                historyButton.addEventListener("click", () => openHistoryModal(config));
-
-                const editButton = createActionButton("编辑", "btn-ghost");
-                editButton.addEventListener("click", () => openConfigModal(config));
-
-                const deleteButton = createActionButton("删除", "btn-secondary");
-                deleteButton.addEventListener("click", () => deleteProcess(config));
-
-                buttons.appendChild(terminalButton);
-                buttons.appendChild(toggleButton);
-                buttons.appendChild(historyButton);
-                buttons.appendChild(editButton);
-                buttons.appendChild(deleteButton);
-                actionCell.appendChild(buttons);
-
-                row.append(nameCell, pidCell, cpuCell, memoryCell, statusCell, actionCell);
+                row.append(nameCell, pidCell, cpuCell, memoryCell, statusCell);
                 elements.statusTableBody.appendChild(row);
 
                 state.rowRefs.set(config.id, {
@@ -1041,20 +1234,24 @@
                     pidCell,
                     cpuCell,
                     memoryCell,
-                    statusBadge,
-                    toggleButton
+                    statusBadge
                 });
             }
+
+            updateToolbar();
         }
 
         function updateAllStatusRows() {
             if (state.configs.length === 0) {
+                updateToolbar();
                 return;
             }
 
             for (const config of state.configs) {
                 updateStatusRow(config.id);
             }
+
+            updateToolbar();
         }
 
         function updateStatusRow(id) {
@@ -1078,9 +1275,58 @@
             refs.memoryCell.textContent = process.isRunning ? `${process.memoryMb.toFixed(1)} MB` : "-";
             refs.statusBadge.className = `status-badge ${statusMeta.className}`;
             refs.statusBadge.textContent = statusMeta.label;
-            refs.toggleButton.className = `action-button ${process.isRunning ? "btn-danger" : "btn-success"}`;
-            refs.toggleButton.textContent = process.isRunning ? "停止" : "启动";
-            refs.toggleButton.onclick = () => toggleProcess(id);
+        }
+
+        function selectProcess(id) {
+            state.selectedId = id;
+
+            for (const [rowId, refs] of state.rowRefs) {
+                refs.row.classList.toggle("selected-row", rowId === id);
+            }
+
+            updateToolbar();
+        }
+
+        function getSelectedConfig() {
+            return state.configs.find(item => item.id === state.selectedId) ?? null;
+        }
+
+        function getSelectedStatus() {
+            const config = getSelectedConfig();
+            if (!config) {
+                return null;
+            }
+
+            return state.statuses.get(config.id) ?? createStatusFallback(config);
+        }
+
+        function updateToolbar() {
+            const config = getSelectedConfig();
+            const process = getSelectedStatus();
+            const hasSelection = config !== null;
+            const buttons = [
+                elements.toolbarTerminalButton,
+                elements.toolbarToggleButton,
+                elements.toolbarHistoryButton,
+                elements.toolbarBackupButton,
+                elements.toolbarEditButton,
+                elements.toolbarDeleteButton
+            ];
+
+            for (const button of buttons) {
+                button.disabled = !hasSelection;
+            }
+
+            if (!hasSelection) {
+                elements.selectedProcessLabel.textContent = "请选择一个进程";
+                elements.toolbarToggleButton.textContent = "启动";
+                elements.toolbarToggleButton.className = "action-button btn-success";
+                return;
+            }
+
+            elements.selectedProcessLabel.textContent = `已选：${config.name} / ${config.id}`;
+            elements.toolbarToggleButton.textContent = process?.isRunning ? "停止" : "启动";
+            elements.toolbarToggleButton.className = `action-button ${process?.isRunning ? "btn-danger" : "btn-success"}`;
         }
 
         function buildSummary(config) {
@@ -1206,22 +1452,51 @@
             }
         }
 
+        async function createManualSnapshot(config) {
+            const confirmed = window.confirm(`确定为进程“${config.name}”生成手动备份吗？这会在线复制当前部署目录，不会停止进程，也不会切换当前版本。`);
+            if (!confirmed) {
+                return;
+            }
+
+            elements.toolbarBackupButton.disabled = true;
+            elements.toolbarBackupButton.textContent = "备份中...";
+
+            try {
+                const response = await fetch(`/api/processes/${encodeURIComponent(config.id)}/snapshots`, {
+                    method: "POST"
+                });
+                const message = await readMessage(response, "手动备份失败。");
+                if (!response.ok) {
+                    throw new Error(message);
+                }
+
+                showToast(message, "success");
+            } catch (error) {
+                console.error(error);
+                showToast(error.message, "error");
+            } finally {
+                elements.toolbarBackupButton.textContent = "备份";
+                updateToolbar();
+            }
+        }
+
         async function openHistoryModal(config) {
             await closeActiveModal();
 
-            elements.historyTitle.textContent = `${config.name} 更新历史`;
+            elements.historyTitle.textContent = `${config.name} 历史备份`;
             elements.historySubtitle.textContent = config.id;
-            elements.historyList.replaceChildren(createHistoryEmpty("正在加载更新历史..."));
+            elements.historyList.replaceChildren(createHistoryEmpty("正在加载历史备份..."));
+            resetHistoryModalLayout();
             showModal("history");
 
             try {
                 const response = await fetch(`/api/processes/${encodeURIComponent(config.id)}/updates`);
                 if (!response.ok) {
-                    throw new Error(await readMessage(response, "加载更新历史失败。"));
+                    throw new Error(await readMessage(response, "加载历史备份失败。"));
                 }
 
-                const records = await response.json();
-                renderHistory(records);
+                const snapshots = await response.json();
+                renderHistory(config, snapshots);
             } catch (error) {
                 console.error(error);
                 elements.historyList.replaceChildren(createHistoryEmpty(error.message));
@@ -1234,46 +1509,126 @@
             }
 
             elements.historyList.replaceChildren();
+            clearHistoryModalInteraction();
             hideModal();
         }
 
-        function renderHistory(records) {
-            elements.historyList.replaceChildren();
+        function resetHistoryModalLayout() {
+            state.historyDrag = null;
+            elements.historyModal.style.left = "16px";
+            elements.historyModal.style.top = "16px";
+            elements.historyModal.style.width = "calc(100vw - 32px)";
+            elements.historyModal.style.height = "calc(100vh - 32px)";
+        }
 
-            if (!records || records.length === 0) {
-                elements.historyList.appendChild(createHistoryEmpty("暂无更新记录。"));
+        function clearHistoryModalInteraction() {
+            state.historyDrag = null;
+        }
+
+        function startHistoryDrag(event) {
+            if (state.activeModal !== "history" || event.target.closest("button")) {
                 return;
             }
 
-            for (const record of records) {
-                const item = document.createElement("article");
-                item.className = "history-item";
-
-                const title = document.createElement("strong");
-                title.textContent = `${getUpdateStatusLabel(record.status)} · ${record.originalFileName}`;
-
-                const details = document.createElement("dl");
-                appendHistoryDetail(details, "开始时间", formatDateTime(record.startedAt));
-                appendHistoryDetail(details, "结束时间", record.finishedAt ? formatDateTime(record.finishedAt) : "-");
-                appendHistoryDetail(details, "文件大小", formatBytes(record.fileSizeBytes));
-                appendHistoryDetail(details, "目标目录", record.targetDirectory);
-                appendHistoryDetail(details, "备份目录", record.backupDirectory || "-");
-                appendHistoryDetail(details, "重启结果", record.restartSucceeded ? "成功" : "未成功");
-                if (record.errorMessage) {
-                    appendHistoryDetail(details, "错误信息", record.errorMessage);
-                }
-
-                item.append(title, details);
-                elements.historyList.appendChild(item);
-            }
+            const rect = elements.historyModal.getBoundingClientRect();
+            state.historyDrag = {
+                offsetX: event.clientX - rect.left,
+                offsetY: event.clientY - rect.top
+            };
+            event.preventDefault();
         }
 
-        function appendHistoryDetail(list, label, value) {
-            const term = document.createElement("dt");
-            term.textContent = label;
-            const description = document.createElement("dd");
-            description.textContent = value;
-            list.append(term, description);
+        function dragHistoryModal(event) {
+            if (!state.historyDrag) {
+                return;
+            }
+
+            const rect = elements.historyModal.getBoundingClientRect();
+            const nextLeft = event.clientX - state.historyDrag.offsetX;
+            const nextTop = event.clientY - state.historyDrag.offsetY;
+            setHistoryModalPosition(nextLeft, nextTop, rect.width, rect.height);
+        }
+
+        function stopHistoryDrag() {
+            state.historyDrag = null;
+        }
+
+        function keepHistoryModalInViewport() {
+            if (state.activeModal !== "history") {
+                return;
+            }
+
+            const rect = elements.historyModal.getBoundingClientRect();
+            setHistoryModalPosition(rect.left, rect.top, rect.width, rect.height);
+        }
+
+        function setHistoryModalPosition(left, top, width, height) {
+            const margin = 12;
+            const maxLeft = Math.max(margin, window.innerWidth - width - margin);
+            const maxTop = Math.max(margin, window.innerHeight - height - margin);
+            const nextLeft = Math.min(Math.max(left, margin), maxLeft);
+            const nextTop = Math.min(Math.max(top, margin), maxTop);
+            elements.historyModal.style.left = `${nextLeft}px`;
+            elements.historyModal.style.top = `${nextTop}px`;
+        }
+
+        function renderHistory(config, snapshots) {
+            elements.historyList.replaceChildren();
+
+            if (!snapshots || snapshots.length === 0) {
+                elements.historyList.appendChild(createHistoryEmpty("暂无历史备份。拖拽更新包成功后会生成新的快照。"));
+                return;
+            }
+
+            const table = document.createElement("table");
+            table.className = "snapshot-table";
+            const thead = document.createElement("thead");
+            const headerRow = document.createElement("tr");
+            for (const label of ["当前", "创建时间", "更新包", "大小", "目标目录", "快照目录", "状态", "操作"]) {
+                const th = document.createElement("th");
+                th.textContent = label;
+                headerRow.appendChild(th);
+            }
+            thead.appendChild(headerRow);
+
+            const tbody = document.createElement("tbody");
+            for (const snapshot of snapshots) {
+                const row = document.createElement("tr");
+                row.appendChild(createSnapshotCell(snapshot.isCurrent ? createCurrentBadge() : "-"));
+                row.appendChild(createSnapshotCell(formatDateTime(snapshot.createdAt)));
+                row.appendChild(createSnapshotCell(snapshot.originalFileName || "-"));
+                row.appendChild(createSnapshotCell(formatBytes(snapshot.fileSizeBytes)));
+                row.appendChild(createSnapshotPathCell(snapshot.targetDirectory));
+                row.appendChild(createSnapshotPathCell(snapshot.snapshotDirectory));
+                row.appendChild(createSnapshotCell(getSnapshotStatusLabel(snapshot)));
+
+                const actionCell = document.createElement("td");
+                if (snapshot.isCurrent) {
+                    actionCell.textContent = "当前版本";
+                } else if (snapshot.status === "Succeeded" && snapshot.snapshotDirectory) {
+                    const actions = document.createElement("div");
+                    actions.className = "snapshot-actions";
+
+                    const restoreButton = createActionButton("一键恢复", "btn-ghost");
+                    restoreButton.classList.add("snapshot-action");
+                    restoreButton.addEventListener("click", () => restoreSnapshot(config, snapshot));
+
+                    const deleteButton = createActionButton("删除", "btn-secondary");
+                    deleteButton.classList.add("snapshot-action");
+                    deleteButton.addEventListener("click", () => deleteSnapshot(config, snapshot));
+
+                    actions.append(restoreButton, deleteButton);
+                    actionCell.appendChild(actions);
+                } else {
+                    actionCell.textContent = "-";
+                }
+
+                row.appendChild(actionCell);
+                tbody.appendChild(row);
+            }
+
+            table.append(thead, tbody);
+            elements.historyList.appendChild(table);
         }
 
         function createHistoryEmpty(message) {
@@ -1283,20 +1638,90 @@
             return empty;
         }
 
-        function getUpdateStatusLabel(status) {
-            if (status === "Succeeded") {
-                return "更新成功";
+        function createSnapshotCell(content) {
+            const cell = document.createElement("td");
+            if (content instanceof Node) {
+                cell.appendChild(content);
+            } else {
+                cell.textContent = String(content);
+            }
+            return cell;
+        }
+
+        function createSnapshotPathCell(value) {
+            const cell = createSnapshotCell(value || "-");
+            cell.className = "snapshot-path";
+            cell.title = value || "";
+            return cell;
+        }
+
+        function createCurrentBadge() {
+            const badge = document.createElement("span");
+            badge.className = "current-snapshot";
+            badge.textContent = "当前运行";
+            return badge;
+        }
+
+        async function restoreSnapshot(config, snapshot) {
+            const confirmed = window.confirm(`确定恢复 ${config.name} 到快照“${snapshot.originalFileName}”吗？恢复会停止进程、切换目录并重启，不会生成新快照。`);
+            if (!confirmed) {
+                return;
             }
 
-            if (status === "RestartFailed") {
-                return "重启失败";
+            try {
+                const response = await fetch(`/api/processes/${encodeURIComponent(config.id)}/updates/${encodeURIComponent(snapshot.snapshotId)}/restore`, {
+                    method: "POST"
+                });
+                const message = await readMessage(response, "恢复快照失败。");
+                if (!response.ok) {
+                    throw new Error(message);
+                }
+
+                showToast(message, "success");
+                await openHistoryModal(config);
+            } catch (error) {
+                console.error(error);
+                showToast(error.message, "error");
+            }
+        }
+
+        async function deleteSnapshot(config, snapshot) {
+            const confirmed = window.confirm(`确定删除快照“${snapshot.originalFileName}”吗？这会永久删除备份目录：${snapshot.snapshotDirectory}，且不可恢复。`);
+            if (!confirmed) {
+                return;
             }
 
-            if (status === "Running") {
-                return "更新中";
+            try {
+                const response = await fetch(`/api/processes/${encodeURIComponent(config.id)}/updates/${encodeURIComponent(snapshot.snapshotId)}`, {
+                    method: "DELETE"
+                });
+                const message = await readMessage(response, "删除历史快照失败。");
+                if (!response.ok) {
+                    throw new Error(message);
+                }
+
+                showToast(message, "success");
+                await openHistoryModal(config);
+            } catch (error) {
+                console.error(error);
+                showToast(error.message, "error");
+            }
+        }
+
+        function getSnapshotStatusLabel(snapshot) {
+            if (snapshot.errorMessage) {
+                return snapshot.errorMessage;
             }
 
-            return "更新失败";
+            if (snapshot.status === "Succeeded") {
+                return snapshot.restartSucceeded ? "可恢复" : "重启失败";
+            }
+
+            if (snapshot.status === "Running") {
+                return "生成中";
+            }
+
+            return "不可用";
         }
 
         function getTargetDirectoryText(dllPath) {
@@ -1412,7 +1837,8 @@
         }
 
         async function deleteProcess(config) {
-            const confirmed = window.confirm(`确定删除进程“${config.name}”吗？如果它正在运行，会先停止再删除。`);
+            const targetDirectory = getTargetDirectoryText(config.dllPath);
+            const confirmed = window.confirm(`确定删除进程“${config.name}”吗？如果它正在运行，会先停止再删除。此操作还会永久删除部署目录：${targetDirectory}，且不可恢复。`);
             if (!confirmed) {
                 return;
             }
@@ -1433,6 +1859,10 @@
 
                 if (state.editingId === config.id && state.activeModal === "config") {
                     closeConfigModal();
+                }
+
+                if (state.selectedId === config.id) {
+                    state.selectedId = null;
                 }
 
                 showToast(message, "success");
@@ -1525,7 +1955,7 @@
             elements.overlay.style.display = "block";
             elements.configModal.style.display = name === "config" ? "block" : "none";
             elements.updateModal.style.display = name === "update" ? "block" : "none";
-            elements.historyModal.style.display = name === "history" ? "block" : "none";
+            elements.historyModal.style.display = name === "history" ? "flex" : "none";
             elements.terminalModal.style.display = name === "terminal" ? "block" : "none";
             document.body.style.overflow = "hidden";
         }

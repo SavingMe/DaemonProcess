@@ -113,6 +113,8 @@ ipch/
 *.VC.VC.opendb
 processes.json
 update-history.json
+update-snapshots.json
+update-current.json
 update-backups/
 update-uploads/
 

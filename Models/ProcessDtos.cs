@@ -47,5 +47,37 @@ public sealed class ProcessUpdateHistoryDto
 public sealed class ProcessUpdateResultDto
 {
     public string Message { get; set; } = string.Empty;
-    public ProcessUpdateHistoryDto History { get; set; } = new();
+    public ProcessSnapshotDto Snapshot { get; set; } = new();
+}
+
+public sealed class ProcessSnapshotDto
+{
+    public string SnapshotId { get; set; } = string.Empty;
+    public string ProcessId { get; set; } = string.Empty;
+    public string ProcessName { get; set; } = string.Empty;
+    public string TargetDirectory { get; set; } = string.Empty;
+    public string SnapshotDirectory { get; set; } = string.Empty;
+    public string OriginalFileName { get; set; } = string.Empty;
+    public long FileSizeBytes { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public string Status { get; set; } = string.Empty;
+    public string? ErrorMessage { get; set; }
+    public bool ProcessWasRunning { get; set; }
+    public bool RestartSucceeded { get; set; }
+    public bool IsCurrent { get; set; }
+}
+
+public sealed class ProcessRestoreResultDto
+{
+    public string Message { get; set; } = string.Empty;
+    public ProcessSnapshotDto Snapshot { get; set; } = new();
+}
+
+public sealed class SevenZipStatusDto
+{
+    public bool Installed { get; set; }
+    public string Source { get; set; } = string.Empty;
+    public string Path { get; set; } = string.Empty;
+    public bool PackageFound { get; set; }
+    public string Message { get; set; } = string.Empty;
 }

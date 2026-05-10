@@ -54,6 +54,27 @@ public class ProcessConfigStore
     public void Save(IReadOnlyCollection<ProcessConfigDto> configs)
     {
         var json = JsonSerializer.Serialize(configs, _serializerOptions);
-        File.WriteAllText(_filePath, json);
+        var directory = Path.GetDirectoryName(_filePath);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var tempPath = Path.Combine(
+            directory ?? Directory.GetCurrentDirectory(),
+            $"{Path.GetFileName(_filePath)}.{Guid.NewGuid():N}.tmp");
+
+        try
+        {
+            File.WriteAllText(tempPath, json);
+            File.Move(tempPath, _filePath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+            {
+                File.Delete(tempPath);
+            }
+        }
     }
 }
