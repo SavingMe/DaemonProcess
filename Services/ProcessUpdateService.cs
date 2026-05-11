@@ -1,5 +1,7 @@
 using ProcessDaemon.Models;
 using System.Diagnostics;
+using System.IO.Compression;
+using System.Text;
 using System.Text.Json;
 
 namespace ProcessDaemon.Services;
@@ -399,17 +401,17 @@ public sealed class ProcessUpdateService
     {
         Directory.CreateDirectory(targetDirectory);
 
-        if (IsZipArchive(archivePath) && IsAutoZipFileNameCodePage())
+        if (IsZipArchive(archivePath) && string.IsNullOrWhiteSpace(password))
         {
-            await ExtractZipArchiveAutoAsync(archivePath, targetDirectory, password, cancellationToken);
+            await ExtractZipArchiveManagedAsync(archivePath, targetDirectory, cancellationToken);
             return;
         }
 
-        var codePage = IsZipArchive(archivePath) ? GetZipFileNameCodePage() : null;
+        var codePage = IsZipArchive(archivePath) ? GetSevenZipFileNameCodePage() : null;
         await ExtractArchiveToDirectoryAsync(archivePath, targetDirectory, password, codePage, cancellationToken);
     }
 
-    private async Task ExtractZipArchiveAutoAsync(string archivePath, string targetDirectory, string? password, CancellationToken cancellationToken)
+    private async Task ExtractZipArchiveManagedAsync(string archivePath, string targetDirectory, CancellationToken cancellationToken)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"processdaemon-extract-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -423,13 +425,13 @@ public sealed class ProcessUpdateService
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                var label = string.IsNullOrWhiteSpace(codePage) ? "default" : codePage;
+                var label = codePage;
                 var candidateDirectory = Path.Combine(tempRoot, label);
                 Directory.CreateDirectory(candidateDirectory);
 
                 try
                 {
-                    await ExtractArchiveToDirectoryAsync(archivePath, candidateDirectory, password, codePage, cancellationToken);
+                    await ExtractZipArchiveManagedCandidateAsync(archivePath, candidateDirectory, GetZipEntryNameEncoding(codePage), cancellationToken);
                     var score = ScoreExtractedFileNames(candidateDirectory);
                     if (best == null || score < best.Value.Score)
                     {
@@ -463,6 +465,54 @@ public sealed class ProcessUpdateService
             {
                 _logger.LogDebug(ex, "清理解压临时目录 {TempRoot} 失败。", tempRoot);
             }
+        }
+    }
+
+    private static async Task ExtractZipArchiveManagedCandidateAsync(
+        string archivePath,
+        string targetDirectory,
+        Encoding entryNameEncoding,
+        CancellationToken cancellationToken)
+    {
+        await using var stream = File.OpenRead(archivePath);
+        using var archive = new ZipArchive(stream, ZipArchiveMode.Read, leaveOpen: false, entryNameEncoding);
+        var normalizedTargetRoot = NormalizeDirectoryRoot(targetDirectory);
+
+        foreach (var entry in archive.Entries)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (string.IsNullOrWhiteSpace(entry.FullName))
+            {
+                continue;
+            }
+
+            var safeRelativePath = NormalizeZipEntryPath(entry.FullName);
+            if (string.IsNullOrWhiteSpace(safeRelativePath))
+            {
+                continue;
+            }
+
+            var destinationPath = Path.GetFullPath(Path.Combine(targetDirectory, safeRelativePath));
+            if (!destinationPath.StartsWith(normalizedTargetRoot, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException($"ZIP 包包含非法路径：{entry.FullName}");
+            }
+
+            var isDirectory = entry.FullName.EndsWith("/", StringComparison.Ordinal) ||
+                entry.FullName.EndsWith("\\", StringComparison.Ordinal) ||
+                string.IsNullOrEmpty(entry.Name);
+
+            if (isDirectory)
+            {
+                Directory.CreateDirectory(destinationPath);
+                continue;
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+            await using var entryStream = entry.Open();
+            await using var output = File.Create(destinationPath);
+            await entryStream.CopyToAsync(output, cancellationToken);
         }
     }
 
@@ -528,23 +578,72 @@ public sealed class ProcessUpdateService
         return string.Equals(Path.GetExtension(archivePath), ".zip", StringComparison.OrdinalIgnoreCase);
     }
 
-    private bool IsAutoZipFileNameCodePage()
-    {
-        var value = GetZipFileNameCodePage();
-        return string.IsNullOrWhiteSpace(value) ||
-            value.Equals("auto", StringComparison.OrdinalIgnoreCase);
-    }
-
     private string GetZipFileNameCodePage()
     {
         return _configuration["UpdatePackage:ZipFileNameCodePage"]?.Trim() ?? "auto";
     }
 
-    private static IEnumerable<string?> GetZipAutoCodePageCandidates()
+    private string? GetSevenZipFileNameCodePage()
     {
-        yield return null;
+        var value = GetZipFileNameCodePage();
+        return string.IsNullOrWhiteSpace(value) || value.Equals("auto", StringComparison.OrdinalIgnoreCase)
+            ? "936"
+            : value;
+    }
+
+    private IEnumerable<string> GetZipAutoCodePageCandidates()
+    {
+        var value = GetZipFileNameCodePage();
+        if (!string.IsNullOrWhiteSpace(value) && !value.Equals("auto", StringComparison.OrdinalIgnoreCase))
+        {
+            yield return value;
+            yield break;
+        }
+
         yield return "65001";
         yield return "936";
+    }
+
+    private static Encoding GetZipEntryNameEncoding(string codePage)
+    {
+        return codePage switch
+        {
+            "65001" => Encoding.UTF8,
+            _ when codePage.Equals("UTF-8", StringComparison.OrdinalIgnoreCase) ||
+                codePage.Equals("UTF8", StringComparison.OrdinalIgnoreCase) => Encoding.UTF8,
+            "936" => Encoding.GetEncoding(936),
+            _ when codePage.Equals("GBK", StringComparison.OrdinalIgnoreCase) ||
+                codePage.Equals("GB2312", StringComparison.OrdinalIgnoreCase) => Encoding.GetEncoding(936),
+            _ => Encoding.GetEncoding(codePage)
+        };
+    }
+
+    private static string NormalizeZipEntryPath(string entryName)
+    {
+        var normalized = entryName.Replace('\\', '/').TrimStart('/');
+        var parts = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        if (parts.Any(part => part == "." || part == ".." || part.Contains(Path.DirectorySeparatorChar) || part.Contains(Path.AltDirectorySeparatorChar)))
+        {
+            throw new InvalidOperationException($"ZIP 包包含非法路径：{entryName}");
+        }
+
+        return Path.Combine(parts);
+    }
+
+    private static string NormalizeDirectoryRoot(string directory)
+    {
+        var root = Path.GetFullPath(directory);
+        if (!root.EndsWith(Path.DirectorySeparatorChar))
+        {
+            root += Path.DirectorySeparatorChar;
+        }
+
+        return root;
     }
 
     private static int ScoreExtractedFileNames(string directory)
