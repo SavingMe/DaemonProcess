@@ -313,7 +313,7 @@
 
         .snapshot-table {
             width: 100%;
-            min-width: 900px;
+            min-width: 1040px;
             border-collapse: collapse;
         }
 
@@ -328,6 +328,13 @@
             max-width: 280px;
             color: var(--muted);
             font-family: "Cascadia Mono", "Consolas", monospace;
+            overflow-wrap: anywhere;
+        }
+
+        .snapshot-remark {
+            max-width: 240px;
+            color: var(--text);
+            line-height: 1.45;
             overflow-wrap: anywhere;
         }
 
@@ -976,17 +983,17 @@
                 <div class="field-grid">
                     <div class="field">
                         <label for="processId">ID</label>
-                        <input id="processId" name="id" placeholder="例如：collector-01" required>
+                        <input id="processId" name="id" placeholder="例如：webapp01" required>
                     </div>
                     <div class="field">
                         <label for="processName">名称</label>
-                        <input id="processName" name="name" placeholder="" required>
+                        <input id="processName" name="name" placeholder="例如：webapp01" required>
                     </div>
                 </div>
 
                 <div class="field">
-                    <label for="dllPath">DLL 路径</label>
-                    <input id="dllPath" name="dllPath" placeholder="例如：test01/WebApplication1.dll" required>
+                    <label for="dllPath">程序路径</label>
+                    <input id="dllPath" name="dllPath" placeholder="例如：/home/ichinesebulbul/webapp/WebApplication1.dll 或 /home/ichinesebulbul/webapp/WebApplication1" required>
                 </div>
 
                 <div class="field">
@@ -1021,6 +1028,10 @@
                 <div class="field">
                     <label for="updatePassword">压缩包密码</label>
                     <input id="updatePassword" name="password" type="password" placeholder="无密码可留空">
+                </div>
+                <div class="field">
+                    <label for="updateRemark">备注</label>
+                    <input id="updateRemark" name="remark" maxlength="200" placeholder="例如：修复登录超时问题">
                 </div>
                 <div class="form-actions">
                     <button class="btn-primary" type="submit" id="uploadUpdateButton">开始更新</button>
@@ -1152,6 +1163,7 @@
             updateSubtitle: document.getElementById("updateSubtitle"),
             updateFileName: document.getElementById("updateFileName"),
             updatePassword: document.getElementById("updatePassword"),
+            updateRemark: document.getElementById("updateRemark"),
             uploadUpdateButton: document.getElementById("uploadUpdateButton"),
             closeUpdateButton: document.getElementById("closeUpdateButton"),
             cancelUpdateButton: document.getElementById("cancelUpdateButton"),
@@ -1584,6 +1596,7 @@
 
             state.pendingUpdate = { config, file };
             elements.updatePassword.value = "";
+            elements.updateRemark.value = "";
             elements.updateTitle.textContent = `更新 ${config.name}`;
             elements.updateSubtitle.textContent = `目标目录：${getTargetDirectoryText(config.dllPath)}`;
             elements.updateFileName.textContent = `${file.name} · ${formatBytes(file.size)}`;
@@ -1613,6 +1626,7 @@
             const formData = new FormData();
             formData.append("file", file);
             formData.append("password", elements.updatePassword.value.trim());
+            formData.append("remark", normalizeRemark(elements.updateRemark.value));
 
             elements.uploadUpdateButton.disabled = true;
             elements.uploadUpdateButton.textContent = "更新中...";
@@ -1640,6 +1654,12 @@
         }
 
         async function createManualSnapshot(config) {
+            const remarkInput = window.prompt(`请输入进程“${config.name}”的备份备注（可选，最多 200 字）。取消则不创建备份。`, "");
+            if (remarkInput === null) {
+                return;
+            }
+
+            const remark = normalizeRemark(remarkInput);
             const confirmed = window.confirm(`确定为进程“${config.name}”生成手动备份吗？这会在线复制当前部署目录，不会停止进程，也不会切换当前版本。`);
             if (!confirmed) {
                 return;
@@ -1650,7 +1670,11 @@
 
             try {
                 const response = await fetch(`/api/processes/${encodeURIComponent(config.id)}/snapshots`, {
-                    method: "POST"
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({ remark })
                 });
                 const message = await readMessage(response, "手动备份失败。");
                 if (!response.ok) {
@@ -1771,7 +1795,7 @@
             table.className = "snapshot-table";
             const thead = document.createElement("thead");
             const headerRow = document.createElement("tr");
-            for (const label of ["当前", "创建时间", "更新包", "大小", "目标目录", "快照目录", "状态", "操作"]) {
+            for (const label of ["当前", "创建时间", "更新包", "备注", "大小", "目标目录", "快照目录", "状态", "操作"]) {
                 const th = document.createElement("th");
                 th.textContent = label;
                 headerRow.appendChild(th);
@@ -1784,6 +1808,7 @@
                 row.appendChild(createSnapshotCell(snapshot.isCurrent ? createCurrentBadge() : "-"));
                 row.appendChild(createSnapshotCell(formatDateTime(snapshot.createdAt)));
                 row.appendChild(createSnapshotCell(snapshot.originalFileName || "-"));
+                row.appendChild(createSnapshotRemarkCell(snapshot.remark));
                 row.appendChild(createSnapshotCell(formatBytes(snapshot.fileSizeBytes)));
                 row.appendChild(createSnapshotPathCell(snapshot.targetDirectory));
                 row.appendChild(createSnapshotPathCell(snapshot.snapshotDirectory));
@@ -1839,6 +1864,14 @@
             const cell = createSnapshotCell(value || "-");
             cell.className = "snapshot-path";
             cell.title = value || "";
+            return cell;
+        }
+
+        function createSnapshotRemarkCell(value) {
+            const remark = normalizeRemark(value);
+            const cell = createSnapshotCell(remark || "-");
+            cell.className = "snapshot-remark";
+            cell.title = remark;
             return cell;
         }
 
@@ -1915,6 +1948,10 @@
             const normalized = dllPath.replaceAll("\\", "/");
             const index = normalized.lastIndexOf("/");
             return index >= 0 ? normalized.slice(0, index) : ".";
+        }
+
+        function normalizeRemark(value) {
+            return String(value ?? "").trim().slice(0, 200);
         }
 
         function formatBytes(value) {
@@ -2025,7 +2062,7 @@
 
         async function deleteProcess(config) {
             const targetDirectory = getTargetDirectoryText(config.dllPath);
-            const confirmed = window.confirm(`确定删除进程“${config.name}”吗？如果它正在运行，会先停止再删除。此操作还会永久删除部署目录：${targetDirectory}，且不可恢复。`);
+            const confirmed = window.confirm(`确定删除进程“${config.name}”吗？如果它正在运行，会先停止再删除。此操作还会永久删除部署目录、历史备份、更新记录和历史日志：${targetDirectory}，且不可恢复。`);
             if (!confirmed) {
                 return;
             }

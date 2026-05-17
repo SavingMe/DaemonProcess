@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.SignalR;
 using ProcessDaemon.Hubs;
 using ProcessDaemon.Models;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
 
@@ -401,7 +402,7 @@ public class ProcessManager
 
         if (string.IsNullOrWhiteSpace(config.DllPath))
         {
-            throw new ArgumentException("DLL 路径不能为空。");
+            throw new ArgumentException("程序路径不能为空。");
         }
 
         if (config.StartupDelayMs < 0)
@@ -436,16 +437,36 @@ public class ProcessManager
             item.LastMonitorTime = default;
             item.LastTotalProcessorTime = default;
 
+            var entryPath = _pathService.ResolveEntryPath(item.DllPath);
+            if (!File.Exists(entryPath))
+            {
+                throw new FileNotFoundException($"程序入口文件不存在：{entryPath}", entryPath);
+            }
+
+            var entryDirectory = Path.GetDirectoryName(entryPath) ?? Directory.GetCurrentDirectory();
+            var useDotnetHost = IsDllEntry(entryPath);
+            var dotnetPath = GetDotnetExecutablePath();
+
+            if (!useDotnetHost)
+            {
+                TrySetLinuxExecutableMode(entryPath);
+            }
+
             var startInfo = new ProcessStartInfo
             {
-                FileName = "dotnet",
+                FileName = useDotnetHost ? dotnetPath : entryPath,
+                WorkingDirectory = entryDirectory,
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 CreateNoWindow = true
             };
 
-            startInfo.ArgumentList.Add(_pathService.ResolveDllPath(item.DllPath));
+            if (useDotnetHost)
+            {
+                startInfo.ArgumentList.Add(entryPath);
+            }
+
             foreach (var argument in SplitCommandLineArguments(item.Arguments))
             {
                 startInfo.ArgumentList.Add(argument);
@@ -457,19 +478,42 @@ public class ProcessManager
                 EnableRaisingEvents = true
             };
 
-            process.Start();
+            try
+            {
+                process.Start();
+            }
+            catch (Win32Exception ex) when (useDotnetHost)
+            {
+                process.Dispose();
+                throw new InvalidOperationException(
+                    $"启动 {item.Name} 失败：未找到 dotnet 可执行文件 \"{dotnetPath}\"。请在 Linux 安装 .NET Runtime，或将被守护程序发布为 Self-contained + SingleFile 后直接配置可执行文件路径。",
+                    ex);
+            }
+            catch (Win32Exception ex)
+            {
+                process.Dispose();
+                throw new InvalidOperationException(
+                    $"启动 {item.Name} 失败：无法执行程序入口文件 \"{entryPath}\"。请确认文件适用于当前 Linux 架构并具有执行权限。",
+                    ex);
+            }
+
             _ = ReadProcessOutputAsync(item, process.StandardOutput.BaseStream, "stdout", "Info");
             _ = ReadProcessOutputAsync(item, process.StandardError.BaseStream, "stderr", "Error");
 
             item.CurrentProcess = process;
-            _logger.LogInformation("已启动 {ProcessName}，PID: {Pid}", item.Name, process.Id);
+            _logger.LogInformation(
+                "已启动 {ProcessName}，PID: {Pid}，启动方式: {Runner}，工作目录: {WorkingDirectory}",
+                item.Name,
+                process.Id,
+                useDotnetHost ? $"{dotnetPath} {entryPath}" : entryPath,
+                entryDirectory);
 
-            // 短暂等待后检测秒退：DLL 不存在、路径错误等导致进程瞬间退出的情况
+            // 短暂等待后检测秒退：入口路径、参数或运行时依赖错误通常会快速退出。
             if (process.WaitForExit(500))
             {
                 var exitCode = process.ExitCode;
                 _logger.LogError(
-                    "{ProcessName} 启动后立即退出，ExitCode={ExitCode}，请检查 DLL 路径和启动参数。",
+                    "{ProcessName} 启动后立即退出，ExitCode={ExitCode}，请检查程序路径、启动参数和运行时依赖。",
                     item.Name, exitCode);
 
                 process.Dispose();
@@ -485,6 +529,57 @@ public class ProcessManager
             _logger.LogError(ex, "启动 {ProcessName} 失败。", item.Name);
             return false;
         }
+    }
+
+    private string GetDotnetExecutablePath()
+    {
+        var dotnetPath = _configuration["ProcessRunner:DotnetPath"];
+        return string.IsNullOrWhiteSpace(dotnetPath) ? "dotnet" : dotnetPath.Trim();
+    }
+
+    private void TrySetLinuxExecutableMode(string entryPath)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        try
+        {
+            var chmodStartInfo = new ProcessStartInfo
+            {
+                FileName = "chmod",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            chmodStartInfo.ArgumentList.Add("+x");
+            chmodStartInfo.ArgumentList.Add(entryPath);
+
+            using var chmod = Process.Start(chmodStartInfo);
+            if (chmod == null)
+            {
+                _logger.LogWarning("无法启动 chmod，跳过设置执行权限：{EntryPath}", entryPath);
+                return;
+            }
+
+            chmod.WaitForExit();
+            if (chmod.ExitCode != 0)
+            {
+                var error = chmod.StandardError.ReadToEnd();
+                _logger.LogWarning("chmod +x {EntryPath} 失败：{Error}", entryPath, error.Trim());
+            }
+        }
+        catch (Exception ex) when (ex is Win32Exception or IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            _logger.LogWarning(ex, "设置程序入口执行权限失败，将继续尝试启动：{EntryPath}", entryPath);
+        }
+    }
+
+    private static bool IsDllEntry(string entryPath)
+    {
+        return string.Equals(Path.GetExtension(entryPath), ".dll", StringComparison.OrdinalIgnoreCase);
     }
 
     private void StopProcessCore(ProcessItem item, bool manualStop)

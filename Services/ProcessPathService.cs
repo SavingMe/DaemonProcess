@@ -14,19 +14,24 @@ public sealed class ProcessPathService
         _environment = environment;
     }
 
-    public string ResolveDllPath(string dllPath)
+    public string ResolveEntryPath(string entryPath)
     {
-        var fullPath = Path.GetFullPath(Path.IsPathRooted(dllPath)
-            ? dllPath.Trim()
-            : Path.Combine(GetProcessBaseDir(), dllPath.Trim()));
+        var fullPath = Path.GetFullPath(Path.IsPathRooted(entryPath)
+            ? entryPath.Trim()
+            : Path.Combine(GetProcessBaseDir(), entryPath.Trim()));
 
         EnsureInsideBaseDir(fullPath);
         return fullPath;
     }
 
+    public string ResolveDllPath(string dllPath)
+    {
+        return ResolveEntryPath(dllPath);
+    }
+
     public string ResolveTargetDirectory(string dllPath)
     {
-        var targetDirectory = Path.GetDirectoryName(ResolveDllPath(dllPath)) ?? GetProcessBaseDir();
+        var targetDirectory = Path.GetDirectoryName(ResolveEntryPath(dllPath)) ?? GetProcessBaseDir();
         EnsureTargetDirectoryIsNotBaseDir(targetDirectory);
         return targetDirectory;
     }
@@ -140,7 +145,7 @@ public sealed class ProcessPathService
 
         if (!normalizedPath.StartsWith(normalizedBase, StringComparison.OrdinalIgnoreCase))
         {
-            throw new ArgumentException($"DLL 路径必须位于 ProcessBaseDir 内：{normalizedBase}");
+            throw new ArgumentException($"程序路径必须位于 ProcessBaseDir 内：{normalizedBase}");
         }
     }
 
@@ -151,7 +156,7 @@ public sealed class ProcessPathService
             NormalizeDirectoryPath(GetProcessBaseDir()),
             StringComparison.OrdinalIgnoreCase))
         {
-            throw new ArgumentException("DLL 路径必须位于 ProcessBaseDir 的子目录内，例如 test01/WebApplication1.dll。");
+            throw new ArgumentException("程序路径必须位于 ProcessBaseDir 的子目录内，例如 test01/WebApplication1.dll 或 test01/WebApplication1。");
         }
     }
 

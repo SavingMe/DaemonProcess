@@ -44,6 +44,20 @@ public sealed class ProcessUpdateHistoryDto
     public bool RestartSucceeded { get; set; }
 }
 
+public sealed class ProcessUpdateCleanupResult
+{
+    public int SnapshotRecordsDeleted { get; set; }
+    public int CurrentSnapshotRecordsDeleted { get; set; }
+    public int HistoryRecordsDeleted { get; set; }
+    public int BackupDirectoriesDeleted { get; set; }
+    public int UploadFilesDeleted { get; set; }
+}
+
+public sealed class ProcessSnapshotRequestDto
+{
+    public string Remark { get; set; } = string.Empty;
+}
+
 public sealed class ProcessUpdateResultDto
 {
     public string Message { get; set; } = string.Empty;
@@ -58,6 +72,7 @@ public sealed class ProcessSnapshotDto
     public string TargetDirectory { get; set; } = string.Empty;
     public string SnapshotDirectory { get; set; } = string.Empty;
     public string OriginalFileName { get; set; } = string.Empty;
+    public string Remark { get; set; } = string.Empty;
     public long FileSizeBytes { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public string Status { get; set; } = string.Empty;

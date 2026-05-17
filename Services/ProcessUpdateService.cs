@@ -8,6 +8,8 @@ namespace ProcessDaemon.Services;
 
 public sealed class ProcessUpdateService
 {
+    private const int MaxRemarkLength = 200;
+
     private static readonly HashSet<string> SupportedExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".zip",
@@ -56,7 +58,7 @@ public sealed class ProcessUpdateService
             .ToList();
     }
 
-    public async Task<ProcessUpdateResultDto> UpdateAsync(string processId, IFormFile file, string? password, CancellationToken cancellationToken)
+    public async Task<ProcessUpdateResultDto> UpdateAsync(string processId, IFormFile file, string? password, string? remark, CancellationToken cancellationToken)
     {
         if (file.Length <= 0)
         {
@@ -93,6 +95,7 @@ public sealed class ProcessUpdateService
                 TargetDirectory = targetDirectory,
                 SnapshotDirectory = snapshotDirectory,
                 OriginalFileName = Path.GetFileName(file.FileName),
+                Remark = NormalizeRemark(remark),
                 FileSizeBytes = file.Length,
                 CreatedAt = createdAt,
                 Status = "Running",
@@ -174,7 +177,7 @@ public sealed class ProcessUpdateService
         }
     }
 
-    public async Task<ProcessUpdateResultDto> CreateManualSnapshotAsync(string processId, CancellationToken cancellationToken)
+    public async Task<ProcessUpdateResultDto> CreateManualSnapshotAsync(string processId, string? remark, CancellationToken cancellationToken)
     {
         await _updateLock.WaitAsync(cancellationToken);
         try
@@ -202,6 +205,7 @@ public sealed class ProcessUpdateService
                 TargetDirectory = targetDirectory,
                 SnapshotDirectory = snapshotDirectory,
                 OriginalFileName = "manual-backup",
+                Remark = NormalizeRemark(remark),
                 FileSizeBytes = 0,
                 CreatedAt = createdAt,
                 Status = "Succeeded",
@@ -323,6 +327,91 @@ public sealed class ProcessUpdateService
         }
     }
 
+    public async Task<ProcessUpdateCleanupResult> DeleteProcessUpdateDataAsync(string processId, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(processId))
+        {
+            throw new ArgumentException("进程 ID 不能为空。", nameof(processId));
+        }
+
+        var normalizedProcessId = processId.Trim();
+        var result = new ProcessUpdateCleanupResult();
+        var backupDirectories = CreatePathSet();
+        var uploadIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        await _updateLock.WaitAsync(cancellationToken);
+        try
+        {
+            var snapshots = await LoadSnapshotsAsync();
+            var removedSnapshots = snapshots
+                .Where(item => IsSameProcess(item.ProcessId, normalizedProcessId))
+                .ToList();
+
+            foreach (var snapshot in removedSnapshots)
+            {
+                AddBackupDirectory(backupDirectories, snapshot.SnapshotDirectory);
+                AddUploadId(uploadIds, snapshot.SnapshotId);
+            }
+
+            if (removedSnapshots.Count > 0)
+            {
+                snapshots.RemoveAll(item => IsSameProcess(item.ProcessId, normalizedProcessId));
+                await SaveSnapshotsAsync(snapshots);
+                result.SnapshotRecordsDeleted = removedSnapshots.Count;
+            }
+
+            var current = await LoadCurrentSnapshotsAsync();
+            var currentKeys = current.Keys
+                .Where(key => IsSameProcess(key, normalizedProcessId))
+                .ToList();
+
+            foreach (var key in currentKeys)
+            {
+                current.Remove(key);
+            }
+
+            if (currentKeys.Count > 0)
+            {
+                await SaveCurrentSnapshotsAsync(current);
+                result.CurrentSnapshotRecordsDeleted = currentKeys.Count;
+            }
+
+            var historyFile = GetHistoryFilePath();
+            if (File.Exists(historyFile))
+            {
+                var histories = await LoadUpdateHistoryAsync(cancellationToken);
+                var removedHistories = histories
+                    .Where(item => IsSameProcess(item.ProcessId, normalizedProcessId))
+                    .ToList();
+
+                foreach (var history in removedHistories)
+                {
+                    AddBackupDirectory(backupDirectories, history.BackupDirectory);
+                    AddUploadId(uploadIds, history.UpdateId);
+                }
+
+                if (removedHistories.Count > 0)
+                {
+                    histories.RemoveAll(item => IsSameProcess(item.ProcessId, normalizedProcessId));
+                    await SaveUpdateHistoryAsync(histories, cancellationToken);
+                    result.HistoryRecordsDeleted = removedHistories.Count;
+                }
+            }
+
+            AddBackupDirectory(
+                backupDirectories,
+                Path.Combine(GetBackupRootDirectory(), SanitizePathSegment(normalizedProcessId)));
+
+            result.BackupDirectoriesDeleted = DeleteBackupDirectories(backupDirectories);
+            result.UploadFilesDeleted = DeleteUploadFiles(uploadIds);
+            return result;
+        }
+        finally
+        {
+            _updateLock.Release();
+        }
+    }
+
     private string GetSnapshotDirectory(string processId, DateTimeOffset timestamp, string snapshotId)
     {
         var folderName = $"{timestamp:yyyyMMdd-HHmmss}-{snapshotId[..8]}";
@@ -399,6 +488,26 @@ public sealed class ProcessUpdateService
         }
 
         return currentFile;
+    }
+
+    private string GetHistoryFilePath()
+    {
+        var historyFile = _configuration["UpdatePackage:HistoryFile"];
+        if (string.IsNullOrWhiteSpace(historyFile))
+        {
+            historyFile = Path.Combine(_environment.ContentRootPath, "update-history.json");
+        }
+        else if (!Path.IsPathRooted(historyFile))
+        {
+            historyFile = Path.Combine(_environment.ContentRootPath, historyFile);
+        }
+
+        return historyFile;
+    }
+
+    private string GetUploadRootDirectory()
+    {
+        return Path.Combine(_environment.ContentRootPath, "update-uploads");
     }
 
     private async Task<string> SaveUploadAsync(IFormFile file, string snapshotId, CancellationToken cancellationToken)
@@ -711,6 +820,143 @@ public sealed class ProcessUpdateService
         return score;
     }
 
+    private int DeleteBackupDirectories(HashSet<string> backupDirectories)
+    {
+        var deleted = 0;
+        foreach (var backupDirectory in backupDirectories)
+        {
+            try
+            {
+                var safeDirectory = ResolveSnapshotDirectoryInsideBackupRoot(backupDirectory);
+                if (!Directory.Exists(safeDirectory))
+                {
+                    continue;
+                }
+
+                _pathService.DeleteSnapshotDirectory(safeDirectory);
+                deleted++;
+            }
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or NotSupportedException)
+            {
+                _logger.LogWarning(ex, "跳过删除进程历史备份目录，路径不在备份根目录内：{BackupDirectory}", backupDirectory);
+            }
+        }
+
+        return deleted;
+    }
+
+    private int DeleteUploadFiles(HashSet<string> uploadIds)
+    {
+        if (uploadIds.Count == 0)
+        {
+            return 0;
+        }
+
+        var uploadRoot = GetUploadRootDirectory();
+        if (!Directory.Exists(uploadRoot))
+        {
+            return 0;
+        }
+
+        var deleted = 0;
+        foreach (var file in Directory.EnumerateFiles(uploadRoot))
+        {
+            var extension = Path.GetExtension(file);
+            if (!SupportedExtensions.Contains(extension))
+            {
+                continue;
+            }
+
+            var fileId = Path.GetFileNameWithoutExtension(file);
+            if (!uploadIds.Contains(fileId))
+            {
+                continue;
+            }
+
+            File.Delete(file);
+            deleted++;
+        }
+
+        return deleted;
+    }
+
+    private async Task<List<ProcessUpdateHistoryDto>> LoadUpdateHistoryAsync(CancellationToken cancellationToken)
+    {
+        await _snapshotLock.WaitAsync(cancellationToken);
+        try
+        {
+            var historyFile = GetHistoryFilePath();
+            if (!File.Exists(historyFile))
+            {
+                return new List<ProcessUpdateHistoryDto>();
+            }
+
+            var json = await File.ReadAllTextAsync(historyFile, cancellationToken);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return new List<ProcessUpdateHistoryDto>();
+            }
+
+            return JsonSerializer.Deserialize<List<ProcessUpdateHistoryDto>>(json, _jsonOptions)
+                ?? new List<ProcessUpdateHistoryDto>();
+        }
+        finally
+        {
+            _snapshotLock.Release();
+        }
+    }
+
+    private async Task SaveUpdateHistoryAsync(List<ProcessUpdateHistoryDto> histories, CancellationToken cancellationToken)
+    {
+        await _snapshotLock.WaitAsync(cancellationToken);
+        try
+        {
+            var historyFile = GetHistoryFilePath();
+            var historyDirectory = Path.GetDirectoryName(historyFile);
+            if (!string.IsNullOrWhiteSpace(historyDirectory))
+            {
+                Directory.CreateDirectory(historyDirectory);
+            }
+
+            var json = JsonSerializer.Serialize(histories, _jsonOptions);
+            await File.WriteAllTextAsync(historyFile, json, cancellationToken);
+        }
+        finally
+        {
+            _snapshotLock.Release();
+        }
+    }
+
+    private static HashSet<string> CreatePathSet()
+    {
+        var comparer = OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal;
+
+        return new HashSet<string>(comparer);
+    }
+
+    private static void AddBackupDirectory(HashSet<string> backupDirectories, string? backupDirectory)
+    {
+        if (!string.IsNullOrWhiteSpace(backupDirectory))
+        {
+            backupDirectories.Add(backupDirectory);
+        }
+    }
+
+    private static void AddUploadId(HashSet<string> uploadIds, string? uploadId)
+    {
+        if (!string.IsNullOrWhiteSpace(uploadId))
+        {
+            uploadIds.Add(uploadId);
+        }
+    }
+
+    private static bool IsSameProcess(string left, string right)
+    {
+        return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+    }
+
     private async Task<List<ProcessSnapshotDto>> LoadSnapshotsAsync()
     {
         await _snapshotLock.WaitAsync();
@@ -834,6 +1080,7 @@ public sealed class ProcessUpdateService
             TargetDirectory = item.TargetDirectory,
             SnapshotDirectory = item.SnapshotDirectory,
             OriginalFileName = item.OriginalFileName,
+            Remark = item.Remark,
             FileSizeBytes = item.FileSizeBytes,
             CreatedAt = item.CreatedAt,
             Status = item.Status,
@@ -842,6 +1089,19 @@ public sealed class ProcessUpdateService
             RestartSucceeded = item.RestartSucceeded,
             IsCurrent = string.Equals(item.SnapshotId, currentSnapshotId, StringComparison.OrdinalIgnoreCase)
         };
+    }
+
+    private static string NormalizeRemark(string? remark)
+    {
+        if (string.IsNullOrWhiteSpace(remark))
+        {
+            return string.Empty;
+        }
+
+        var normalized = remark.Trim();
+        return normalized.Length <= MaxRemarkLength
+            ? normalized
+            : normalized[..MaxRemarkLength];
     }
 
     private static string SanitizePathSegment(string value)

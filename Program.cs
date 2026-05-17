@@ -3,6 +3,7 @@ using ProcessDaemon.Models;
 using ProcessDaemon.Services;
 using ProcessDaemon.Workers;
 using System.Text;
+using System.Text.Json;
 
 Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 var builder = WebApplication.CreateBuilder(args);
@@ -150,14 +151,30 @@ processApi.MapPut("/{id}", async (string id, ProcessManager processManager, Proc
     }
 });
 
-processApi.MapDelete("/{id}", async (string id, ProcessManager processManager) =>
+processApi.MapDelete("/{id}", async (
+    string id,
+    ProcessManager processManager,
+    ProcessUpdateService updateService,
+    ProcessLogService logService,
+    CancellationToken cancellationToken) =>
 {
     try
     {
         var deleted = await processManager.DeleteProcessAsync(id);
-        return deleted
-            ? Results.Ok(new { message = "进程配置和部署目录已删除。" })
-            : Results.NotFound(new { message = "未找到对应的进程配置。" });
+        if (!deleted)
+        {
+            return Results.NotFound(new { message = "未找到对应的进程配置。" });
+        }
+
+        var updateCleanup = await updateService.DeleteProcessUpdateDataAsync(id, cancellationToken);
+        var logsDeleted = await logService.DeleteProcessLogsAsync(id, cancellationToken);
+
+        return Results.Ok(new
+        {
+            message = "进程配置、部署目录、历史备份、更新记录和历史日志已删除。",
+            updateCleanup,
+            logsDeleted
+        });
     }
     catch (ArgumentException ex)
     {
@@ -252,7 +269,8 @@ processApi.MapPost("/{id}/updates", async (
         }
 
         var password = form["password"].FirstOrDefault();
-        var result = await updateService.UpdateAsync(id, file, password, cancellationToken);
+        var remark = form["remark"].FirstOrDefault();
+        var result = await updateService.UpdateAsync(id, file, password, remark, cancellationToken);
         return result.Snapshot.Status == "Succeeded"
             ? Results.Ok(result)
             : Results.BadRequest(result);
@@ -281,13 +299,24 @@ processApi.MapPost("/{id}/updates", async (
 
 processApi.MapPost("/{id}/snapshots", async (
     string id,
+    HttpRequest request,
     ProcessUpdateService updateService,
     CancellationToken cancellationToken) =>
 {
     try
     {
-        var result = await updateService.CreateManualSnapshotAsync(id, cancellationToken);
+        ProcessSnapshotRequestDto? snapshotRequest = null;
+        if (request.ContentLength.GetValueOrDefault() > 0)
+        {
+            snapshotRequest = await request.ReadFromJsonAsync<ProcessSnapshotRequestDto>(cancellationToken: cancellationToken);
+        }
+
+        var result = await updateService.CreateManualSnapshotAsync(id, snapshotRequest?.Remark, cancellationToken);
         return Results.Ok(result);
+    }
+    catch (JsonException ex)
+    {
+        return Results.BadRequest(new { message = $"备注请求格式不正确：{ex.Message}" });
     }
     catch (KeyNotFoundException ex)
     {
