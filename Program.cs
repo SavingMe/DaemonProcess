@@ -15,6 +15,7 @@ builder.Services.AddSingleton<ProcessLogService>();
 builder.Services.AddSingleton<ProcessManager>();
 builder.Services.AddSingleton<SevenZipService>();
 builder.Services.AddSingleton<ProcessUpdateService>();
+builder.Services.AddSingleton<FileManagerService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProcessLogService>());
 builder.Services.AddHostedService<DaemonWorker>();
 
@@ -72,6 +73,128 @@ toolsApi.MapPost("/7zip/install", async (SevenZipService sevenZipService, Cancel
             Installed = false,
             Message = ex.Message
         });
+    }
+});
+
+app.MapGet("/api/files", (FileManagerService fileManager, string? path) =>
+{
+    try
+    {
+        return Results.Ok(fileManager.ListDirectory(path));
+    }
+    catch (Exception ex) when (IsFileManagerException(ex))
+    {
+        return ToFileManagerError(ex);
+    }
+});
+
+app.MapDelete("/api/files", (FileManagerService fileManager, string path) =>
+{
+    try
+    {
+        fileManager.Delete(path);
+        return Results.Ok(new { message = "已删除。" });
+    }
+    catch (Exception ex) when (IsFileManagerException(ex))
+    {
+        return ToFileManagerError(ex);
+    }
+});
+
+var filesApi = app.MapGroup("/api/files");
+
+filesApi.MapGet("/download", (FileManagerService fileManager, string path) =>
+{
+    try
+    {
+        var stream = fileManager.OpenRead(path);
+        return Results.File(
+            stream,
+            "application/octet-stream",
+            Path.GetFileName(path),
+            enableRangeProcessing: true);
+    }
+    catch (Exception ex) when (IsFileManagerException(ex))
+    {
+        return ToFileManagerError(ex);
+    }
+});
+
+filesApi.MapGet("/content", async (FileManagerService fileManager, string path, CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var content = await fileManager.ReadTextAsync(path, cancellationToken);
+        return Results.Ok(content);
+    }
+    catch (Exception ex) when (IsFileManagerException(ex))
+    {
+        return ToFileManagerError(ex);
+    }
+});
+
+filesApi.MapPut("/content", async (
+    FileManagerService fileManager,
+    SaveFileTextRequest request,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        await fileManager.SaveTextAsync(request, cancellationToken);
+        return Results.Ok(new { message = "文件已保存。" });
+    }
+    catch (Exception ex) when (IsFileManagerException(ex))
+    {
+        return ToFileManagerError(ex);
+    }
+});
+
+filesApi.MapPost("/directory", (FileManagerService fileManager, CreateDirectoryRequest request) =>
+{
+    try
+    {
+        var path = fileManager.CreateDirectory(request);
+        return Results.Ok(new { message = "目录已创建。", path });
+    }
+    catch (Exception ex) when (IsFileManagerException(ex))
+    {
+        return ToFileManagerError(ex);
+    }
+});
+
+filesApi.MapPost("/upload", async (
+    FileManagerService fileManager,
+    HttpRequest request,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var form = await request.ReadFormAsync(cancellationToken);
+        var directory = form["path"].FirstOrDefault();
+        var overwrite = bool.TryParse(form["overwrite"].FirstOrDefault(), out var parsed) && parsed;
+        var uploaded = await fileManager.SaveUploadsAsync(directory ?? string.Empty, form.Files, overwrite, cancellationToken);
+        return Results.Ok(new
+        {
+            message = $"已上传 {uploaded.Count} 个文件。",
+            uploaded
+        });
+    }
+    catch (Exception ex) when (IsFileManagerException(ex))
+    {
+        return ToFileManagerError(ex);
+    }
+});
+
+filesApi.MapPut("/rename", (FileManagerService fileManager, RenameFileRequest request) =>
+{
+    try
+    {
+        var path = fileManager.Rename(request);
+        return Results.Ok(new { message = "已重命名。", path });
+    }
+    catch (Exception ex) when (IsFileManagerException(ex))
+    {
+        return ToFileManagerError(ex);
     }
 });
 
@@ -401,3 +524,22 @@ processApi.MapDelete("/{id}/updates/{snapshotId}", async (
 });
 
 app.Run();
+
+static bool IsFileManagerException(Exception ex)
+{
+    return ex is ArgumentException or
+        InvalidOperationException or
+        IOException or
+        UnauthorizedAccessException or
+        NotSupportedException or
+        System.ComponentModel.Win32Exception;
+}
+
+static IResult ToFileManagerError(Exception ex)
+{
+    return ex switch
+    {
+        FileNotFoundException or DirectoryNotFoundException => Results.NotFound(new { message = ex.Message }),
+        _ => Results.BadRequest(new { message = ex.Message })
+    };
+}
