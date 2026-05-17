@@ -1034,7 +1034,7 @@
         <div class="modal-header">
             <div>
                 <h3 id="historyTitle">历史备份</h3>
-                <p id="historySubtitle">展示该进程的版本快照和当前运行版本。</p>
+                <p id="historySubtitle">展示该进程的版本快照和当前版本。</p>
             </div>
             <button class="modal-close" type="button" id="closeHistoryButton">关闭</button>
         </div>
@@ -1845,12 +1845,12 @@
         function createCurrentBadge() {
             const badge = document.createElement("span");
             badge.className = "current-snapshot";
-            badge.textContent = "当前运行";
+            badge.textContent = "当前版本";
             return badge;
         }
 
         async function restoreSnapshot(config, snapshot) {
-            const confirmed = window.confirm(`确定恢复 ${config.name} 到快照“${snapshot.originalFileName}”吗？恢复会停止进程、切换目录并重启，不会生成新快照。`);
+            const confirmed = window.confirm(`确定恢复 ${config.name} 到快照“${snapshot.originalFileName}”吗？恢复会停止进程并切换目录，不会自动启动，也不会生成新快照。`);
             if (!confirmed) {
                 return;
             }
@@ -1901,7 +1901,7 @@
             }
 
             if (snapshot.status === "Succeeded") {
-                return snapshot.restartSucceeded ? "可恢复" : "重启失败";
+                return "可恢复";
             }
 
             if (snapshot.status === "Running") {

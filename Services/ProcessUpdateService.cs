@@ -244,16 +244,16 @@ public sealed class ProcessUpdateService
                 throw new InvalidOperationException("只能恢复成功生成的快照。");
             }
 
-            if (!Directory.Exists(snapshot.SnapshotDirectory))
+            var snapshotDirectory = ResolveSnapshotDirectoryInsideBackupRoot(snapshot.SnapshotDirectory);
+            if (!Directory.Exists(snapshotDirectory))
             {
-                throw new DirectoryNotFoundException($"快照目录不存在：{snapshot.SnapshotDirectory}");
+                throw new DirectoryNotFoundException($"快照目录不存在：{snapshotDirectory}");
             }
 
             var targetDirectory = _pathService.ResolveTargetDirectory(config.DllPath);
             var status = (await _processManager.GetStatusSnapshotsAsync())
                 .FirstOrDefault(item => string.Equals(item.Id, processId, StringComparison.OrdinalIgnoreCase));
             var wasRunning = status?.IsRunning == true;
-            var targetMayBeChanged = false;
 
             try
             {
@@ -264,39 +264,21 @@ public sealed class ProcessUpdateService
 
                 Directory.CreateDirectory(targetDirectory);
                 ProcessPathService.ClearDirectory(targetDirectory);
-                targetMayBeChanged = true;
-                _pathService.CopyDirectoryFast(snapshot.SnapshotDirectory, targetDirectory);
-
-                var restartSucceeded = await _processManager.StartProcessAsync(processId);
-                if (!restartSucceeded)
-                {
-                    var failedSnapshot = WithCurrentFlag(snapshot, await GetCurrentSnapshotIdAsync(processId));
-                    failedSnapshot.RestartSucceeded = false;
-                    failedSnapshot.ErrorMessage = "快照已恢复，但进程重启失败。";
-                    return new ProcessRestoreResultDto
-                    {
-                        Message = failedSnapshot.ErrorMessage,
-                        Snapshot = failedSnapshot
-                    };
-                }
+                _pathService.CopyDirectoryFast(snapshotDirectory, targetDirectory);
 
                 await SetCurrentSnapshotIdAsync(processId, snapshotId);
                 var currentSnapshot = WithCurrentFlag(snapshot, snapshotId);
-                currentSnapshot.RestartSucceeded = true;
+                currentSnapshot.SnapshotDirectory = snapshotDirectory;
+                currentSnapshot.RestartSucceeded = false;
 
                 return new ProcessRestoreResultDto
                 {
-                    Message = "已恢复到选中的快照，并标记为当前运行版本。",
+                    Message = "已恢复到选中的快照，并标记为当前版本。进程未自动启动。",
                     Snapshot = currentSnapshot
                 };
             }
             catch (Exception ex)
             {
-                if (wasRunning && !targetMayBeChanged)
-                {
-                    await _processManager.StartProcessAsync(processId);
-                }
-
                 _logger.LogError(ex, "恢复 {ProcessName} 快照 {SnapshotId} 失败。", config.Name, snapshotId);
                 var failedSnapshot = WithCurrentFlag(snapshot, await GetCurrentSnapshotIdAsync(processId));
                 failedSnapshot.ErrorMessage = ex.Message;
@@ -330,7 +312,8 @@ public sealed class ProcessUpdateService
                 string.Equals(item.SnapshotId, snapshotId, StringComparison.OrdinalIgnoreCase))
                 ?? throw new KeyNotFoundException("未找到对应的快照。");
 
-            _pathService.DeleteSnapshotDirectory(snapshot.SnapshotDirectory);
+            var snapshotDirectory = ResolveSnapshotDirectoryInsideBackupRoot(snapshot.SnapshotDirectory);
+            _pathService.DeleteSnapshotDirectory(snapshotDirectory);
             snapshots.RemoveAll(item => string.Equals(item.SnapshotId, snapshotId, StringComparison.OrdinalIgnoreCase));
             await SaveSnapshotsAsync(snapshots);
         }
@@ -342,6 +325,12 @@ public sealed class ProcessUpdateService
 
     private string GetSnapshotDirectory(string processId, DateTimeOffset timestamp, string snapshotId)
     {
+        var folderName = $"{timestamp:yyyyMMdd-HHmmss}-{snapshotId[..8]}";
+        return Path.Combine(GetBackupRootDirectory(), SanitizePathSegment(processId), folderName);
+    }
+
+    private string GetBackupRootDirectory()
+    {
         var backupRoot = _configuration["UpdatePackage:BackupRoot"];
         if (string.IsNullOrWhiteSpace(backupRoot))
         {
@@ -352,8 +341,34 @@ public sealed class ProcessUpdateService
             backupRoot = Path.Combine(_environment.ContentRootPath, backupRoot);
         }
 
-        var folderName = $"{timestamp:yyyyMMdd-HHmmss}-{snapshotId[..8]}";
-        return Path.Combine(backupRoot, SanitizePathSegment(processId), folderName);
+        return Path.GetFullPath(backupRoot);
+    }
+
+    private string ResolveSnapshotDirectoryInsideBackupRoot(string snapshotDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(snapshotDirectory))
+        {
+            throw new InvalidOperationException("快照目录不能为空。");
+        }
+
+        var fullPath = Path.GetFullPath(snapshotDirectory);
+        var normalizedBackupRoot = NormalizeDirectoryRoot(GetBackupRootDirectory());
+        var normalizedSnapshotDirectory = NormalizeDirectoryRoot(fullPath);
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+        if (string.Equals(normalizedSnapshotDirectory, normalizedBackupRoot, comparison))
+        {
+            throw new InvalidOperationException("快照目录不能是备份根目录本身。");
+        }
+
+        if (!normalizedSnapshotDirectory.StartsWith(normalizedBackupRoot, comparison))
+        {
+            throw new InvalidOperationException($"快照目录必须位于备份根目录内：{normalizedBackupRoot}");
+        }
+
+        return fullPath;
     }
 
     private string GetSnapshotsFilePath()
